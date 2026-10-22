@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.go text
+*.sh text eol=lf
+*.deb binary
+*.gz binary

@@ -1,0 +1,38 @@
+name: Bug report / 缺陷报告
+description: Report unexpected behavior with reproducible details.
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities use SECURITY.md. Never paste tokens, passwords, private keys, databases, or backup archives."
+  - type: input
+    id: version
+    attributes:
+      label: Gatehouse version
+      placeholder: ghbctl version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, architecture and client
+      placeholder: Debian 13 amd64; OpenSSH client version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include sanitized configuration or request fields where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized errors and checks
+      description: Include relevant doctor/service output; remove secrets and deployment identifiers.

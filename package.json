@@ -1,0 +1,9 @@
+{
+  "name": "gatehouse-web-tests",
+  "version": "0.2.1",
+  "private": true,
+  "license": "MIT",
+  "scripts": { "test": "node tests/ui.cjs", "test:web": "node tests/ui.cjs" },
+  "devDependencies": { "jsdom": "30.1.3" },
+  "engines": { "node": ">=24" }
+}

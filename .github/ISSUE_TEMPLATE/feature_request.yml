@@ -1,0 +1,16 @@
+name: Feature request / 功能建议
+description: Describe a use case and its access-control requirements.
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: Describe the concrete workflow and clients involved.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior and permission boundaries
+    validations:
+      required: true

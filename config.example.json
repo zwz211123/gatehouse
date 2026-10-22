@@ -1,0 +1,14 @@
+{
+  "data": "/var/lib/gatehouse",
+  "run": "/run/gatehouse",
+  "ssh_listen": "0.0.0.0:2222",
+  "public_host": "jump.example.com",
+  "public_port": 2222,
+  "web_listen": "0.0.0.0:8443",
+  "web_url": "https://jump.example.com:8443",
+  "tls_cert": "/etc/gatehouse/tls/fullchain.pem",
+  "tls_key": "/etc/gatehouse/tls/key.pem",
+  "ssh_user": "gatehouse-ssh",
+  "web_user": "gatehouse-web",
+  "max_connections": 128
+}

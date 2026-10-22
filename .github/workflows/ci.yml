@@ -1,0 +1,89 @@
+name: CI
+on:
+  push:
+    branches: ['main']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install SSH test clients
+        run: sudo apt-get update && sudo apt-get install -y openssh-client sshpass openssl
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Run Go tests with race detector
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Install DOM test dependencies
+        run: npm ci --ignore-scripts
+      - name: Web DOM tests
+        run: npm run test:web
+      - name: Check shell and Python syntax
+        run: |
+          bash -n install.sh acceptance.sh
+          python3 -m py_compile packaging/*.py tests/*.py
+  packages:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Install packaging and integration tools
+        run: sudo apt-get update && sudo apt-get install -y python3 dpkg-dev xz-utils binutils openssh-client sshpass openssl qemu-user-static
+      - name: Build both architectures
+        run: python3 packaging/build.py
+      - name: Verify packages and architecture executables
+        env:
+          GHB_QEMU: /usr/bin/qemu-aarch64-static
+        run: |
+          python3 tests/packages.py
+          python3 tests/source_archive.py
+      - name: Native CLI, snapshot and TLS smoke checks
+        run: |
+          sudo python3 tests/cli_smoke.py
+          sudo python3 tests/snapshot_smoke.py
+          python3 tests/tls_smoke.py
+      - name: Split-process integration
+        run: |
+          mkdir -p build/process
+          for role in core ssh web; do
+            cp "build/amd64/gatehouse-$role/usr/lib/gatehouse/ghb-$role" "build/process/ghb-$role"
+          done
+          cp build/amd64/gatehouse-cli/usr/bin/ghbctl build/process/ghbctl
+          sudo python3 tests/process_smoke.py
+      - name: ARM64 test execution
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -o build/gh-arm64.test ./internal/gh
+          qemu-aarch64-static build/gh-arm64.test -test.v
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gatehouse-packages-${{ github.sha }}
+          path: dist/0.2.1/
+          if-no-files-found: error
+          retention-days: 14
