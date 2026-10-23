@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add fish-style fuzzy Tab candidates with descriptions and cycling, plus `clear`.
+- Generate shortcuts for every requested purpose and select output through numeric menus.
+- Review credentials with `proxy list` / `proxy show`; store new temporary passwords directly while accepting legacy hashes.
+- Delete inactive revoked, expired, or fully consumed credentials individually or with `d all` in `proxy list`, preserving audit history.
+
 ## 0.2.1
 
 ### Web administration
