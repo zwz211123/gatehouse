@@ -25,6 +25,45 @@ ROOT_PAGES = {
 }
 
 
+def expand_versions(text, values, source):
+    """Share version expansion between Pages and offline package documents."""
+    for key, value in values.items():
+        text = text.replace('{{ ' + key + ' }}', value)
+    if re.search(r'{{\s*(?:docs_|download_)[a-z_]+\s*}}', text):
+        raise ValueError(f'{source}: unknown documentation version token')
+    return text
+
+
+def offline_metadata(info):
+    version = info['version']
+    label = {'development': '开发构建', 'release': '正式版构建',
+             'prerelease': '预发布构建'}[info['channel']]
+    return {
+        'docs_version': version,
+        'download_version': version,
+        'docs_channel': info['channel'],
+        'docs_notice': f'本文档随 **{version}（{label}）** 安装包提供。',
+        'download_notice': (f'以下示例使用本安装包对应的 **{version}** amd64 bundle。'
+                            '其他架构请使用对应文件；此说明不表示该构建已发布到 Releases。'),
+    }
+
+
+def stage_offline_docs(destination, info, root=ROOT):
+    """Keep package-relative paths and assets; source archives retain templates."""
+    destination = pathlib.Path(destination)
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    shutil.copytree(root / 'docs', destination / 'docs')
+    values = offline_metadata(info)
+    for source in sorted(root.glob('*.md')) + sorted((root / 'docs').rglob('*.md')):
+        relative = source.relative_to(root)
+        output = destination / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(expand_versions(source.read_text(encoding='utf-8'), values, relative),
+                          encoding='utf-8')
+
+
 def metadata():
     """Consume the build identity supplied by Release CI, with a dev fallback."""
     supplied = os.environ.get('DOCS_VERSION') or None
@@ -94,10 +133,7 @@ def main():
 
         # Expand explicit version tokens only; preserve historical version literals.
         text = (ROOT / source).read_text(encoding='utf-8')
-        for key, value in values.items():
-            text = text.replace('{{ ' + key + ' }}', value)
-        if re.search(r'{{\s*(?:docs_|download_)[a-z_]+\s*}}', text):
-            raise ValueError(f'{source}: unknown documentation version token')
+        text = expand_versions(text, values, source)
         # Link rewriting must not modify code samples.
         chunks = re.split(r'(^[ \t]*(?:`{3,}|~{3,})[^\n]*\n.*?^[ \t]*(?:`{3,}|~{3,})[ \t]*$)',
                           text, flags=re.MULTILINE | re.DOTALL)

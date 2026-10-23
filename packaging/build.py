@@ -19,6 +19,10 @@ REPACK='--repack-only' in sys.argv
 if not REPACK:shutil.rmtree(OUT,ignore_errors=True)
 OUT.mkdir(parents=True,exist_ok=True)
 os.environ['SOURCE_DATE_EPOCH']=str(INFO['source_date_epoch'])
+sys.path.insert(0,str(ROOT/'scripts'))
+from prepare_docs import stage_offline_docs
+DOCS=ROOT/'build/package-docs'
+stage_offline_docs(DOCS,INFO)
 def run(*args,**kw): subprocess.run(args,check=True,**kw)
 def write(path,text,mode=0o644):
     path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text);path.chmod(mode)
@@ -101,11 +105,11 @@ for arch in ([] if REPACK else ['amd64','arm64']):
         control(stage,name,arch,depends,'SSH access broker '+part+' component')
         docs=stage/'usr/share/doc'/name
         docs.mkdir(parents=True,exist_ok=True)
-        shutil.copy(ROOT/'README.md',docs/'README.md')
+        shutil.copy(DOCS/'README.md',docs/'README.md')
         shutil.copy(ROOT/'LICENSE',docs/'copyright')
         for doc in ['README.en.md','UPGRADE.md','DESIGN.md','IMPLEMENTATION.md','TEST-REPORT.md','CHANGELOG.md','SECURITY.md','CONTRIBUTING.md']:
-            shutil.copy(ROOT/doc,docs/doc)
-        shutil.copytree(ROOT/'docs',docs/'docs',dirs_exist_ok=True)
+            shutil.copy(DOCS/doc,docs/doc)
+        shutil.copytree(DOCS/'docs',docs/'docs',dirs_exist_ok=True)
         if (ROOT/'THIRD-PARTY-LICENSES.txt').exists():shutil.copy(ROOT/'THIRD-PARTY-LICENSES.txt',docs/'THIRD-PARTY-LICENSES.txt')
         if part!='cli':
             write(stage/f'lib/systemd/system/gatehouse-{part}.service',unit(part))
@@ -147,8 +151,8 @@ for arch in ['amd64','arm64']:
     sha=OUT/f'SHA256SUMS-{arch}';sha.write_text(manifest)
     with tarfile.open(OUT/f'gatehouse-{VERSION}-{arch}.tar.gz','w:gz') as tar:
         for p in files+[sha,ROOT/'README.md',ROOT/'README.en.md',ROOT/'CONTRIBUTING.md',ROOT/'LICENSE',ROOT/'SECURITY.md',ROOT/'DESIGN.md',ROOT/'IMPLEMENTATION.md',ROOT/'TEST-REPORT.md',ROOT/'install.sh',ROOT/'acceptance.sh',ROOT/'CHANGELOG.md',ROOT/'UPGRADE.md',ROOT/'packaging/upgrade_state.py']+([ROOT/'VALIDATION.json'] if (ROOT/'VALIDATION.json').is_file() else []):
-            tar.add(p,arcname=p.name)
-        tar.add(ROOT/'docs',arcname='docs')
+            tar.add(DOCS/p.name if p.suffix=='.md' else p,arcname=p.name)
+        tar.add(DOCS/'docs',arcname='docs')
         tar.add(INFO_PATH,arcname='BUILD-INFO.json')
 with tarfile.open(OUT/f'gatehouse-{VERSION}-source.tar.gz','w:gz') as tar:
     tar.add(INFO_PATH,arcname='gatehouse/BUILD-INFO.json')

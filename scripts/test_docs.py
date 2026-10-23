@@ -91,6 +91,44 @@ class DocumentationVersionTests(unittest.TestCase):
         self.assertIn(history, text)
         self.assertEqual((output / 'upgrade.md').read_text(), history)
 
+    def test_offline_docs_use_package_identity_and_preserve_source_layout(self):
+        docs = self.root / 'docs'
+        (docs / 'assets').mkdir(parents=True)
+        (docs / 'assets/style.css').write_text('body {}')
+        history = 'Historical migration 0.2.0 -> 0.2.1\n'
+        (self.root / 'UPGRADE.md').write_text(history)
+        (self.root / 'README.md').write_text('[Install](docs/installation.md)\n')
+        template = ("{{ download_notice }}\n~~~bash\n"
+                    "GATEHOUSE_VERSION='{{ download_version }}'\n~~~\n"
+                    '[Upgrade](../UPGRADE.md)\n')
+        (docs / 'installation.md').write_text(template)
+        (docs / 'index.md').write_text('{{ docs_notice }}\n')
+        (docs / 'development.md').write_text('dist/{{ docs_version }}/\n')
+        self.release()  # A website download hint must not affect package docs.
+        for version, channel in [('9.0.0', 'release'), ('9.0.0-rc.1', 'prerelease'),
+                                 ('dev-abcdef012345', 'development')]:
+            with self.subTest(channel=channel):
+                output = self.root / 'build/package-docs'
+                prepare_docs.stage_offline_docs(output, {'version': version, 'channel': channel}, self.root)
+                text = (output / 'docs/installation.md').read_text()
+                self.assertIn("GATEHOUSE_VERSION='" + version + "'", text)
+                self.assertIn('不表示该构建已发布到 Releases', text)
+                self.assertIn('[Upgrade](../UPGRADE.md)', text)
+                self.assertEqual((output / 'README.md').read_text(), '[Install](docs/installation.md)\n')
+                self.assertEqual((output / 'UPGRADE.md').read_text(), history)
+                self.assertEqual((output / 'docs/assets/style.css').read_text(), 'body {}')
+                self.assertIn(version, (output / 'docs/index.md').read_text())
+                self.assertEqual((output / 'docs/development.md').read_text(), 'dist/' + version + '/\n')
+                self.assertFalse((output / 'upgrade.md').exists())
+        self.assertEqual((docs / 'installation.md').read_text(), template)
+
+    def test_offline_docs_reject_unexpanded_version_tokens(self):
+        (self.root / 'docs').mkdir()
+        (self.root / 'docs/index.md').write_text('{{ docs_typo }}')
+        with self.assertRaises(ValueError):
+            prepare_docs.stage_offline_docs(self.root / 'build/offline',
+                                            {'version': '9.0.0', 'channel': 'release'}, self.root)
+
 
 if __name__ == '__main__':
     unittest.main()

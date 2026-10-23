@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Render bundled and Debian package documentation with the package build identity; correct documentation versioning instructions while preserving source templates and historical versions.
 - Inject release versions and source commits at build time; use explicit development identities for ordinary CI and local builds.
 - Derive Debian versions, installer package selection, source archive metadata and documentation from one build identity, with prerelease ordering and publish-time cross-checks.
 
