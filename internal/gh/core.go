@@ -187,7 +187,7 @@ func (c *Core) Revalidate() {
 		}
 		if valid && l.Ticket != "" {
 			var x Ticket
-			valid = c.Store.Get("ticket", l.Ticket, &x) == nil && c.ticketValid(x, l.Source) == nil && l.Created+int64(x.Spec.Duration) > now()
+			valid = c.Store.Get("ticket", l.Ticket, &x) == nil && c.ticketValid(x, l.Source) == nil && !secondsElapsed(l.Created, x.Spec.Duration, now())
 			if !l.Started.Load() && l.Created+30 < now() {
 				valid = false
 			}
@@ -217,7 +217,7 @@ func (c *Core) Revalidate() {
 		c.Store.db.Exec("DELETE FROM audits WHERE json_extract(data,'$.time') < ?", cutoff)
 		ts, _ := list[Ticket](c.Store, "ticket")
 		for _, t := range ts {
-			if t.Expires+int64(t.Spec.Duration) < cutoff {
+			if secondsElapsed(t.Expires, t.Spec.Duration, cutoff) {
 				c.Store.Delete("ticket", t.ID)
 				c.Store.Delete("ticket-secret", t.ID)
 				c.Store.Delete("ticket-failures", t.ID)
@@ -225,7 +225,7 @@ func (c *Core) Revalidate() {
 		}
 		c.byteCounters.Range(func(k, v any) bool {
 			var t Ticket
-			if c.Store.Get("ticket", k.(string), &t) != nil || t.Expires+int64(t.Spec.Duration) < now() {
+			if c.Store.Get("ticket", k.(string), &t) != nil || secondsElapsed(t.Expires, t.Spec.Duration, now()) {
 				c.byteCounters.Delete(k)
 				c.paceCounters.Delete(k)
 			}

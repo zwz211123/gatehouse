@@ -434,7 +434,12 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 			}
 			duration := 7200
 			if len(fields) == 3 {
-				duration, _ = strconv.Atoi(fields[2])
+				var err error
+				duration, err = strconv.Atoi(fields[2])
+				if err != nil {
+					io.WriteString(ch, "连接时限无效\r\n")
+					continue
+				}
 			}
 			c.directMenu(l, ch, fields[1], duration)
 		case "web":

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.2
+
+- Remove fixed and global TTL/connection-duration caps; retain delegated grant limits, including exact exec and TCP purpose resources. Ignore legacy global time caps on upgrade.
+- Support large second values without nanosecond timer, expiry, revalidation or retention arithmetic overflow; reject TTLs whose absolute expiry cannot be represented.
+
 ## 0.3.1
 
 - Count currently open SSH channels instead of cumulative channel opens; release capacity on close and setup failure for TCP forwarding and session channels.

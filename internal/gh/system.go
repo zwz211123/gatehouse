@@ -16,8 +16,10 @@ type Settings struct {
 }
 
 func (c *Core) settings() Settings {
-	x := Settings{ID: "global", Limits: Limits{86400, 600, 100, 100, 16, 128, 0, 0}, RetentionDays: 180, MaxOutstanding: 32}
+	x := Settings{ID: "global", Limits: Limits{0, 0, 100, 100, 16, 128, 0, 0}, RetentionDays: 180, MaxOutstanding: 32}
 	c.Store.Get("settings", "global", &x)
+	// Time limits belong to grants; ignore legacy global time limits on upgrade.
+	x.Limits.MaxDuration, x.Limits.MaxTTL = 0, 0
 	return x
 }
 func (c *Core) systemChange(ws *WebSession, q Change, source string) (any, error) {
@@ -27,9 +29,10 @@ func (c *Core) systemChange(ws *WebSession, q Change, source string) (any, error
 			return nil, ErrDenied
 		}
 		var x Settings
-		if json.Unmarshal(q.Data, &x) != nil || x.RetentionDays < 1 || x.RetentionDays > 3650 || x.MaxOutstanding < 1 || x.MaxOutstanding > 10000 || !limitsSubset(x.Limits, Limits{86400, 600, 100, 100, 16, 128, 0, 0}) {
+		if json.Unmarshal(q.Data, &x) != nil || x.RetentionDays < 1 || x.RetentionDays > 3650 || x.MaxOutstanding < 1 || x.MaxOutstanding > 10000 || !limitsSubset(x.Limits, Limits{0, 0, 100, 100, 16, 128, 0, 0}) {
 			return nil, errorf("invalid security settings")
 		}
+		x.Limits.MaxDuration, x.Limits.MaxTTL = 0, 0
 		x.ID = "global"
 		current := c.settings()
 		if q.ETag != hash(encode(current)) {
