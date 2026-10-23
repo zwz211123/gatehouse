@@ -45,3 +45,34 @@ Gatehouse 使用标准 SSH 协议。临时用户名和密码让第三方客户�
 ## 连接立即被关闭
 
 先检查申请有效期、次数和实时授权，再检查模式、PTY、自动 exec、环境变量、文件根和通道配额。实际请求越过申请边界会被拒绝；应调整明确需要的申请和授权，而不是关闭服务端核验。更多错误见[故障排查](troubleshooting.md)。
+
+## SFTP 请求、权限与审计
+
+SFTP 在报文入口记录请求，并在返回客户端前记录实际结果。每条记录包含
+`sftp_session`、`request_id`、请求名称、路径/目标路径或文件句柄；读写还包含
+偏移量与请求长度。不会记录文件内容。`attempt` 只表示收到请求，不能当作成功；
+完成记录为 `ok`、`eof`、`denied`、`error` 或 `unsupported`，连接中断时未完成的
+请求记录为 `aborted`。STATUS 响应保留协议状态码和错误文本。
+
+| SFTP 请求 | 所需 `file_ops` / 处理方式 |
+| --- | --- |
+| `REALPATH`、`STAT`、`LSTAT`、`READLINK`、`STATVFS` | 已声明的任一文件操作权限，仅查询路径/元数据，不授予文件内容读取权限 |
+| `OPENDIR`、`READDIR` | `list`；后续请求绑定已打开的目录句柄 |
+| `OPEN`、`READ`、`WRITE` | 根据打开标志检查 `read`、`write`，后续读写绑定文件句柄并受流量配额约束 |
+| `FSTAT`、`FSETSTAT`、`CLOSE` | 记录句柄与打开时路径；属性修改遵守 `metadata` / `write` 规则 |
+| `MKDIR` | `mkdir` |
+| `REMOVE`、`RMDIR` | `remove` |
+| `RENAME`、`posix-rename@openssh.com` | `rename`，检查源和目的路径；POSIX 变体保留覆盖语义 |
+| `SETSTAT`、`FSETSTAT` | `metadata`；修改文件大小额外要求 `write`；支持权限、所有者、时间和大小 |
+| `SYMLINK` | `write` + `metadata`，检查链接位置及目标路径 |
+| `hardlink@openssh.com` | `read` + `write` + `metadata`，检查两个端点 |
+| `INIT`、未知请求及扩展 | 均记录；未实现的扩展返回 `SSH_FX_OP_UNSUPPORTED`，畸形报文拒绝并记录 |
+
+`LSTAT` 和删除、重命名针对链接本身，因此可查看和处理根目录内的断链；
+真正打开文件仍检查链接解析后的路径。所有操作继续受目标服务器账号自身的文件系统权限约束。
+当前依赖支持 SFTP v3；不宣称支持其他协议版本或所有厂商扩展。
+`fsync@openssh.com` 等未实现扩展不会被静默接受，失败同样可在日志中定位。
+文件句柄的属性查询/修改使用受限路径适配；同会话内重命名会更新路径，
+删除或覆盖原条目后无法安全按路径定位的句柄属性请求返回不支持，避免修改替代文件。
+它不替代目标端 chroot，也不保证抵抗目标文件系统的外部并发路径替换。
+逐请求审计会增加文件传输日志量，需按实际传输规模设置保留期限。

@@ -2,6 +2,7 @@ package gh
 
 import (
 	"io"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -26,7 +27,9 @@ func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, 
 	defer remote.Close()
 	ready()
 	p := &fileProxy{c, l, t, remote}
-	server := sftp.NewRequestServer(ch, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
+	stream := newSFTPAuditStream(ch, p)
+	defer stream.Close()
+	server := sftp.NewRequestServer(stream, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
 	defer server.Close()
 	e = server.Serve()
 	status := uint32(0)
@@ -37,17 +40,20 @@ func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, 
 }
 func (p *fileProxy) permit(op, fp string) error {
 	if !contains(p.t.Spec.FileOps, op) || p.c.ticketValid(p.t, p.l.Source) != nil {
-		p.c.FailTicket(p.l, "SFTP operation denied")
-		return os.ErrPermission
-	}
-	if e := p.c.Audit(p.l.User, "file."+op, p.t.ID, "attempt", p.l.Source, fp); e != nil {
-		return os.ErrPermission
+		return p.deny(op, fp, "SFTP operation denied")
 	}
 	return nil
 }
+func (p *fileProxy) deny(op, fp, reason string) error {
+	if err := p.c.Audit(p.l.User, "file.authorization", p.t.ID, "denied", p.l.Source, encode(map[string]string{"operation": op, "path": fp, "reason": reason})); err != nil {
+		return sftp.ErrSSHFxPermissionDenied
+	}
+	p.c.FailTicket(p.l, reason)
+	return sftp.ErrSSHFxPermissionDenied
+}
 func (p *fileProxy) checked(fp string, create bool) (string, error) {
 	if strings.ContainsRune(fp, 0) {
-		return "", os.ErrPermission
+		return "", sftp.ErrSSHFxPermissionDenied
 	}
 	if !path.IsAbs(fp) {
 		fp = path.Join(p.t.Spec.FileRoot, fp)
@@ -56,8 +62,7 @@ func (p *fileProxy) checked(fp string, create bool) (string, error) {
 	root := p.t.Spec.FileRoot
 	within := func(x string) bool { return root == "/" || x == root || strings.HasPrefix(x, root+"/") }
 	if !within(fp) {
-		p.c.FailTicket(p.l, "SFTP path outside application")
-		return "", os.ErrPermission
+		return "", p.deny("path", fp, "SFTP path outside application")
 	}
 	actual, e := p.remote.RealPath(fp)
 	if e != nil && create {
@@ -72,8 +77,7 @@ func (p *fileProxy) checked(fp string, create bool) (string, error) {
 		return "", e
 	}
 	if !within(actual) {
-		p.c.FailTicket(p.l, "SFTP resolved path outside application")
-		return "", os.ErrPermission
+		return "", p.deny("path", actual, "SFTP resolved path outside application")
 	}
 	return actual, nil
 }
@@ -97,7 +101,7 @@ func (p *fileProxy) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	}
 	flags := r.Pflags()
 	if flags.Read && p.permit("read", r.Filepath) != nil {
-		return nil, os.ErrPermission
+		return nil, sftp.ErrSSHFxPermissionDenied
 	}
 	fp, e := p.checked(r.Filepath, flags.Creat)
 	if e != nil {
@@ -167,55 +171,159 @@ func (a infoList) ListAt(out []os.FileInfo, off int64) (int, error) {
 	}
 	return n, nil
 }
-func (p *fileProxy) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	op := "list"
-	if r.Method != "List" {
-		op = "read"
-		if !contains(p.t.Spec.FileOps, op) && contains(p.t.Spec.FileOps, "write") {
-			op = "write"
+
+// Metadata probes do not read file contents. A list-only browser must be
+// able to stat its directory and resolve its initial path.
+func (p *fileProxy) probePermission(fp string) error {
+	for _, op := range []string{"read", "list", "write", "metadata", "mkdir", "remove", "rename"} {
+		if contains(p.t.Spec.FileOps, op) {
+			return p.permit(op, fp)
 		}
 	}
-	if e := p.permit(op, r.Filepath); e != nil {
-		return nil, e
-	}
-	fp, e := p.checked(r.Filepath, false)
-	if e != nil {
-		return nil, e
-	}
+	return sftp.ErrSSHFxPermissionDenied
+}
+
+func (p *fileProxy) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	var err error
 	if r.Method == "List" {
-		a, e := p.remote.ReadDir(fp)
-		return infoList(a), e
+		err = p.permit("list", r.Filepath)
+	} else {
+		err = p.probePermission(r.Filepath)
 	}
-	if r.Method == "Stat" {
-		i, e := p.remote.Stat(fp)
-		return infoList{i}, e
+	if err != nil {
+		return nil, err
 	}
-	return nil, os.ErrPermission
+	var fp string
+	if r.Method == "Lstat" {
+		fp, err = p.entryPath(r.Filepath)
+	} else {
+		fp, err = p.checked(r.Filepath, false)
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch r.Method {
+	case "List":
+		items, err := p.remote.ReadDir(fp)
+		return infoList(items), err
+	case "Stat", "Lstat":
+		var info os.FileInfo
+		if r.Method == "Lstat" {
+			info, err = p.remote.Lstat(fp)
+		} else {
+			info, err = p.remote.Stat(fp)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return infoList{info}, nil
+	default:
+		return nil, sftp.ErrSSHFxOpUnsupported
+	}
 }
 func (p *fileProxy) Lstat(r *sftp.Request) (sftp.ListerAt, error) {
-	return p.Filelist(&sftp.Request{Method: "Stat", Filepath: r.Filepath})
+	return p.Filelist(&sftp.Request{Method: "Lstat", Filepath: r.Filepath})
 }
-func (p *fileProxy) RealPath(fp string) (string, error) { return p.checked(fp, false) }
+func (p *fileProxy) RealPath(fp string) (string, error) {
+	if err := p.probePermission(fp); err != nil {
+		return "", err
+	}
+	return p.checked(fp, false)
+}
+
+// Resolve the parent, not the final entry. LSTAT, READLINK, REMOVE and
+// RENAME operate on the link itself, including dangling symbolic links.
+func (p *fileProxy) entryPath(fp string) (string, error) {
+	if strings.ContainsRune(fp, 0) {
+		return "", sftp.ErrSSHFxBadMessage
+	}
+	if !path.IsAbs(fp) {
+		fp = path.Join(p.t.Spec.FileRoot, fp)
+	}
+	fp = path.Clean(fp)
+	root := p.t.Spec.FileRoot
+	if root != "/" && fp != root && !strings.HasPrefix(fp, root+"/") {
+		return "", p.deny("path", fp, "SFTP entry outside application")
+	}
+	if fp == root {
+		return p.checked(fp, false)
+	}
+	parent, err := p.checked(path.Dir(fp), false)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(parent, path.Base(fp)), nil
+}
+func (p *fileProxy) Readlink(fp string) (string, error) {
+	if err := p.probePermission(fp); err != nil {
+		return "", err
+	}
+	fp, err := p.entryPath(fp)
+	if err != nil {
+		return "", err
+	}
+	return p.remote.ReadLink(fp)
+}
+func (p *fileProxy) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
+	if err := p.probePermission(r.Filepath); err != nil {
+		return nil, err
+	}
+	fp, err := p.checked(r.Filepath, false)
+	if err != nil {
+		return nil, err
+	}
+	return p.remote.StatVFS(fp)
+}
+func (p *fileProxy) PosixRename(r *sftp.Request) error {
+	return p.rename(r, true)
+}
+func (p *fileProxy) rename(r *sftp.Request, posix bool) error {
+	if err := p.permit("rename", r.Filepath); err != nil {
+		return err
+	}
+	from, err := p.entryPath(r.Filepath)
+	if err != nil {
+		return err
+	}
+	to, err := p.entryPath(r.Target)
+	if err != nil {
+		return err
+	}
+	if posix {
+		return p.remote.PosixRename(from, to)
+	}
+	return p.remote.Rename(from, to)
+}
 func (p *fileProxy) Filecmd(r *sftp.Request) error {
+	switch r.Method {
+	case "Rename":
+		return p.rename(r, false)
+	case "Link", "Symlink":
+		return p.link(r)
+	}
 	op := ""
 	switch r.Method {
 	case "Mkdir":
 		op = "mkdir"
 	case "Remove", "Rmdir":
 		op = "remove"
-	case "Rename":
-		op = "rename"
 	case "Setstat":
 		op = "metadata"
 	default:
-		return os.ErrPermission
+		return sftp.ErrSSHFxOpUnsupported
 	}
-	if e := p.permit(op, r.Filepath); e != nil {
-		return e
+	if err := p.permit(op, r.Filepath); err != nil {
+		return err
 	}
-	fp, e := p.checked(r.Filepath, r.Method == "Mkdir")
-	if e != nil {
-		return e
+	var fp string
+	var err error
+	if r.Method == "Setstat" {
+		fp, err = p.checked(r.Filepath, false)
+	} else {
+		fp, err = p.entryPath(r.Filepath)
+	}
+	if err != nil {
+		return err
 	}
 	switch r.Method {
 	case "Mkdir":
@@ -224,32 +332,34 @@ func (p *fileProxy) Filecmd(r *sftp.Request) error {
 		return p.remote.Remove(fp)
 	case "Rmdir":
 		return p.remote.RemoveDirectory(fp)
-	case "Rename":
-		to, e := p.checked(r.Target, true)
-		if e != nil {
-			return e
-		}
-		return p.remote.Rename(fp, to)
 	case "Setstat":
 		flags := r.AttrFlags()
 		if r.Flags & ^uint32(15) != 0 {
-			return os.ErrPermission
+			return sftp.ErrSSHFxOpUnsupported
 		}
 		at := r.Attributes()
-		if flags.UidGid {
-			return os.ErrPermission
+		// Validate the entire operation before making any changes.
+		if flags.Size {
+			if at.Size > math.MaxInt64 {
+				return sftp.ErrSSHFxBadMessage
+			}
+			if err = p.permit("write", r.Filepath); err != nil {
+				return err
+			}
 		}
 		if flags.Size {
-			if !contains(p.t.Spec.FileOps, "write") {
-				return os.ErrPermission
+			if err = p.remote.Truncate(fp, int64(at.Size)); err != nil {
+				return err
 			}
-			if e = p.remote.Truncate(fp, int64(at.Size)); e != nil {
-				return e
+		}
+		if flags.UidGid {
+			if err = p.remote.Chown(fp, int(at.UID), int(at.GID)); err != nil {
+				return err
 			}
 		}
 		if flags.Permissions {
-			if e = p.remote.Chmod(fp, at.FileMode()); e != nil {
-				return e
+			if err = p.remote.Chmod(fp, at.FileMode()); err != nil {
+				return err
 			}
 		}
 		if flags.Acmodtime {
@@ -257,4 +367,37 @@ func (p *fileProxy) Filecmd(r *sftp.Request) error {
 		}
 	}
 	return nil
+}
+
+// Link creation needs both write and metadata rights. Hard links also need
+// read rights to the source. Existing read/write-only tickets gain no new
+// mutation authority. Both endpoints stay inside the declared root.
+func (p *fileProxy) link(r *sftp.Request) error {
+	for _, op := range []string{"write", "metadata"} {
+		if err := p.permit(op, r.Target); err != nil {
+			return err
+		}
+	}
+	to, err := p.entryPath(r.Target)
+	if err != nil {
+		return err
+	}
+	if r.Method == "Link" {
+		if err = p.permit("read", r.Filepath); err != nil {
+			return err
+		}
+		from, err := p.checked(r.Filepath, false)
+		if err != nil {
+			return err
+		}
+		return p.remote.Link(from, to)
+	}
+	target := r.Filepath
+	if !path.IsAbs(target) {
+		target = path.Join(path.Dir(to), target)
+	}
+	if _, err = p.checked(target, true); err != nil {
+		return err
+	}
+	return p.remote.Symlink(r.Filepath, to)
 }
