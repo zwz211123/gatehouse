@@ -51,7 +51,7 @@ GATEHOUSE_GO=go python3 packaging/build.py
 GHB_QEMU=/usr/bin/qemu-aarch64-static python3 tests/packages.py
 ~~~
 
-产物位于 `dist/0.2.1/`：8 个架构组件 deb、1 个元包、每架构 bundle、源码归档及 SHA-256 清单。amd64 使用通用 `GOAMD64=v1`，两个架构均 `CGO_ENABLED=0`。构建不安装包，不修改宿主机服务。
+产物位于 `dist/{{ docs_version }}/`：8 个架构组件 deb、1 个元包、每架构 bundle、源码归档及 SHA-256 清单。amd64 使用通用 `GOAMD64=v1`，两个架构均 `CGO_ENABLED=0`。构建不安装包，不修改宿主机服务。
 
 `SOURCE_DATE_EPOCH` 传递给 dpkg-deb 控制包的时间基准；当前不保证 tar/gzip 归档逐字节可复现。源码归档限制目录和扩展名；Git 工作树仅打包索引中跟踪的文件，排除构建目录。非 Git 源码目录也不应混放实例数据。依赖锁定见 go.mod/go.sum 与 package-lock.json，许可证见 THIRD-PARTY-LICENSES.txt。
 
@@ -94,7 +94,7 @@ sudo env GHB_LEGACY_CLI_DEB=/absolute/path/gatehouse-cli_0.2.0_amd64.deb \
 
 1. 在准备发布的源码中更新版本，确保 `internal/gh/config.go` 与 `packaging/build.py` 一致，并审阅安装/升级脚本与 CHANGELOG。
 2. 将变更合并到 main，进入 GitHub **Actions → Release → Run workflow**，分支选择 **main**。
-3. 填写与源码一致的标签，例如 `v0.2.1`；按需勾选预发布。
+3. 填写与源码一致的标签，例如 `v{{ docs_version }}`；按需勾选预发布。
 4. 工作流检查版本和标签，然后复用完整 CI。全部成功后验证 SHA-256，创建指向本次执行提交的标签和 Release，并上传所有 Debian 包、双架构 bundle、源码归档与校验清单。
 
-Release 仅接受人工手动触发，不因 push、PR 或 tag 自动发布；只能从 main 执行。已有标签会被拒绝，不覆盖已发布版本。发布运行使用只读权限构建，仅发布任务具有仓库内容写权限。该流程发布下载附件，不升级任何已部署服务器。CI 附件解压后按版本目录组织，例如 `0.2.1/`。
+Release 仅接受人工手动触发，不因 push、PR 或 tag 自动发布；只能从 main 执行。已有标签会被拒绝，不覆盖已发布版本。发布运行使用只读权限构建，仅发布任务具有仓库内容写权限。该流程发布下载附件，不升级任何已部署服务器。CI 附件解压后按版本目录组织，例如 `{{ docs_version }}/`。

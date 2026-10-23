@@ -27,7 +27,8 @@ Download the appropriate architecture bundle from [Releases](https://github.com/
 
 ~~~bash
 mkdir gatehouse-install
-tar -xzf gatehouse-0.2.1-amd64.tar.gz -C gatehouse-install
+GATEHOUSE_VERSION=REPLACE_WITH_DOWNLOADED_VERSION # Version of the downloaded bundle, without v
+tar -xzf "gatehouse-${GATEHOUSE_VERSION}-amd64.tar.gz" -C gatehouse-install
 cd gatehouse-install
 sha256sum -c SHA256SUMS-amd64
 sudo bash install.sh
