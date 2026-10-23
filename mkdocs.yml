@@ -1,0 +1,81 @@
+site_name: Gatehouse 文档
+site_description: 兼容标准 SSH 客户端的堡垒机：部署、授权、临时连接与日常运维。
+site_url: https://zwz211123.github.io/gatehouse/
+repo_url: https://github.com/zwz211123/gatehouse
+repo_name: zwz211123/gatehouse
+edit_uri: ''
+docs_dir: build/docs-source
+site_dir: build/docs-site
+strict: true
+theme:
+  name: material
+  language: zh
+  font: false
+  icon:
+    logo: material/gate
+    repo: fontawesome/brands/github
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: 切换到深色模式
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: 切换到浅色模式
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+plugins:
+  - search:
+      lang: zh
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+extra_css:
+  - assets/extra.css
+nav:
+  - 首页: index.md
+  - 开始使用:
+      - 核心概念: concepts.md
+      - 快速上手: quickstart.md
+      - 安装与首次部署: installation.md
+      - 使用指南: usage.md
+      - 客户端兼容: clients.md
+  - 授权与运维:
+      - 权限与委派: permissions.md
+      - 升级已有实例: upgrade.md
+      - 备份与恢复: backup-restore.md
+      - 故障排查: troubleshooting.md
+      - 安全边界: security.md
+  - 开发与项目:
+      - 架构设计: architecture.md
+      - 实现范围: implementation.md
+      - 开发与构建: development.md
+      - 文档站维护: documentation.md
+      - 贡献指南: contributing.md
+      - 测试状态: test-report.md
+      - 版本记录: changelog.md

@@ -1,5 +1,7 @@
 # Gatehouse
 
+[Documentation (中文)](https://zwz211123.github.io/gatehouse/) · [Quick start (中文)](docs/quickstart.md)
+
 [简体中文](README.md)
 
 An SSH bastion for Debian-based systems, with delegated access control, SSH-issued web login, and temporary credentials for standard SSH clients.
