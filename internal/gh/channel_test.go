@@ -98,6 +98,49 @@ func TestTCPChannelSetupFailureReleasesCapacity(t *testing.T) {
 	}
 }
 
+func TestPeerClosedTCPChannelReleasesCapacity(t *testing.T) {
+	for _, route := range []string{"target", "jump"} {
+		t.Run(route, func(t *testing.T) {
+			f := setup(t)
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			ticket, pw := f.ticket(t, tcpSpec(t, listener.Addr().String(), route))
+			client, err := f.dial(ticket, pw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			conn, err := client.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer, err := listener.Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer peer.Close()
+			conn.Close()
+			// The TCP peer intentionally keeps its output half open. Allow the
+			// asynchronous SSH close notification to be handled without waiting
+			// for that peer to close or for the ticket's duration to expire.
+			time.Sleep(100 * time.Millisecond)
+			replacement, err := client.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatalf("peer-closed channel retained capacity: %v", err)
+			}
+			defer replacement.Close()
+			secondPeer, err := listener.Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer secondPeer.Close()
+		})
+	}
+}
+
 func TestSessionChannelsReusedWhileTCPRemainsOpen(t *testing.T) {
 	f := setup(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

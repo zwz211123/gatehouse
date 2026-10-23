@@ -300,7 +300,14 @@ func (c *Core) tcpChannel(l *Live, t Ticket, n ssh.NewChannel) {
 	}
 	defer ch.Close()
 	l.Started.Store(true)
-	go ssh.DiscardRequests(r)
+	go func() {
+		ssh.DiscardRequests(r)
+		// Requests close on SSH channel CLOSE, not on a write-side EOF.
+		// A fully closed peer must release its slot and unblock the reverse
+		// copy even when the TCP endpoint keeps its output half open.
+		ch.Close()
+		remote.Close()
+	}()
 	done := make(chan struct{})
 	go func() {
 		c.copyLimited(l, t, remote, ch)
