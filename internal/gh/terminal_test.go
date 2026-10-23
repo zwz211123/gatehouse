@@ -265,3 +265,235 @@ func TestSingleAndBulkDeletionEligibility(t *testing.T) {
 		})
 	}
 }
+
+func TestConnectByServerName(t *testing.T) {
+	f := setup(t)
+	var b bytes.Buffer
+	noPrompt := func() (string, error) { t.Fatal("single account prompted"); return "", io.EOF }
+	for _, args := range []string{"acct", "target", "target 1800", "acct 1800"} {
+		id, duration, err := f.c.connectTarget(f.l, &b, noPrompt, args)
+		wantDuration := 7200
+		if strings.HasSuffix(args, "1800") {
+			wantDuration = 1800
+		}
+		if err != nil || id != "acct" || duration != wantDuration {
+			t.Fatalf("%q: %q %d %v", args, id, duration, err)
+		}
+	}
+	var asset Asset
+	f.c.Store.Get("asset", "asset", &asset)
+	asset.Name = "中文 服务器 123"
+	f.c.Store.Put("asset", asset.ID, asset)
+	for _, args := range []string{asset.Name, asset.Name + " 1800"} {
+		if id, _, err := f.c.connectTarget(f.l, &b, noPrompt, args); err != nil || id != "acct" {
+			t.Fatal(args, id, err)
+		}
+	}
+	if xs := f.c.completions(f.l, "connect 中文 服", len("connect 中文 服")); len(xs) != 1 || xs[0].value != "connect "+asset.Name {
+		t.Fatal("server name completion", xs)
+	}
+	for _, args := range []string{"", "unknown", "acct invalid", "acct 9", "acct 99999999999999999999999999"} {
+		if _, _, err := f.c.connectTarget(f.l, &b, noPrompt, args); err == nil {
+			t.Fatal("accepted invalid target/duration", args)
+		}
+	}
+}
+
+func TestConnectAccountSelection(t *testing.T) {
+	f := setup(t)
+	f.c.Store.Put("account", "acct2", Account{ID: "acct2", Asset: "asset", Name: "other", Credential: "cred", Enabled: true})
+	// Identical server names must remain distinguishable in the picker.
+	f.c.Store.Put("asset", "asset2", Asset{ID: "asset2", Name: "target", Host: "192.0.2.1", Port: 2222, Enabled: true})
+	f.c.Store.Put("account", "acct3", Account{ID: "acct3", Asset: "asset2", Name: "deploy", Credential: "cred", Enabled: true})
+	var b bytes.Buffer
+	inputs := []string{"bad", "4", "2"}
+	i := 0
+	id, duration, err := f.c.connectTarget(f.l, &b, func() (string, error) { s := inputs[i]; i++; return s, nil }, "target 1800")
+	if err != nil || id != "acct2" || duration != 1800 || i != 3 {
+		t.Fatal(id, duration, i, err)
+	}
+	for _, want := range []string{"无效选择", "acct", "acct2", "acct3", "192.0.2.1:2222"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatal("missing picker detail", want, b.String())
+		}
+	}
+	for _, input := range []string{"0", ""} {
+		if id, _, err := f.c.connectTarget(f.l, &b, func() (string, error) { return input, nil }, "target"); err != nil || id != "" {
+			t.Fatal("cancel failed", id, err)
+		}
+	}
+	if _, _, err := f.c.connectTarget(f.l, &b, func() (string, error) { return "", io.EOF }, "target"); err != io.EOF {
+		t.Fatal("EOF lost", err)
+	}
+	if id, _, err := f.c.connectTarget(f.l, &b, func() (string, error) { t.Fatal("ID prompted"); return "", io.EOF }, "acct"); err != nil || id != "acct" {
+		t.Fatal("ID compatibility", id, err)
+	}
+	// An existing account ID wins over a colliding asset name, even if disabled.
+	f.c.Store.Put("account", "target", Account{ID: "target", Enabled: false})
+	if xs, err := f.c.connectChoices(f.l, "target"); err != nil || len(xs) != 0 {
+		t.Fatal("unavailable ID fell back to a name", xs, err)
+	}
+}
+
+func TestConnectFiltersUnavailableAndUnauthorizedAccounts(t *testing.T) {
+	f := setup(t)
+	f.c.Store.Put("user", "reader", User{ID: "reader", Enabled: true})
+	f.c.Store.Put("grant", "direct", Grant{ID: "direct", Subject: "reader", Issuer: f.l.User, Actions: []string{"shell.direct"}, Resources: []string{"acct"}, Enabled: true, CIDRs: []string{"127.0.0.0/8"}})
+	l := &Live{User: "reader", Source: f.l.Source}
+	f.c.Store.Put("account", "hidden", Account{ID: "hidden", Asset: "asset", Name: "hidden-user", Credential: "cred", Enabled: true})
+	var b bytes.Buffer
+	noPrompt := func() (string, error) { t.Fatal("unavailable account offered"); return "", io.EOF }
+	if id, _, err := f.c.connectTarget(l, &b, noPrompt, "target"); err != nil || id != "acct" {
+		t.Fatal("authorized account not selected", id, err)
+	}
+	l.Source = "192.0.2.1:1234"
+	if xs, _ := f.c.connectChoices(l, "target"); len(xs) != 0 {
+		t.Fatal("source restriction ignored", xs)
+	}
+	l.Source = f.l.Source
+	for _, kind := range []string{"account", "asset", "credential"} {
+		key := map[string]string{"account": "acct", "asset": "asset", "credential": "cred"}[kind]
+		var record map[string]any
+		f.c.Store.Get(kind, key, &record)
+		record["enabled"] = false
+		f.c.Store.Put(kind, key, record)
+		if xs, _ := f.c.connectChoices(l, "target"); len(xs) != 0 {
+			t.Fatal("disabled dependency offered", kind, xs)
+		}
+		record["enabled"] = true
+		f.c.Store.Put(kind, key, record)
+	}
+	if xs := f.c.completions(l, "connect tar", len("connect tar")); len(xs) != 1 {
+		t.Fatal("missing or duplicate server completion", xs)
+	}
+	if xs := f.c.completions(&Live{User: "nobody"}, "connect ", len("connect ")); len(xs) != 0 {
+		t.Fatal("completion exposed unauthorized targets", xs)
+	}
+}
+
+func TestMenuConnectByServerName(t *testing.T) {
+	for _, multiple := range []bool{false, true} {
+		t.Run(fmt.Sprint("multiple=", multiple), func(t *testing.T) {
+			f := setup(t)
+			if multiple {
+				f.c.Store.Put("account", "acct2", Account{ID: "acct2", Asset: "asset", Name: "other", Credential: "cred", Enabled: true})
+			}
+			client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			in, _ := session.StdinPipe()
+			out, _ := session.StdoutPipe()
+			if err := session.Shell(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				var output strings.Builder
+				until := func(want string) error {
+					for !strings.HasSuffix(output.String(), want) {
+						var b [1]byte
+						n, err := out.Read(b[:])
+						if n > 0 {
+							output.WriteByte(b[0])
+						}
+						if err != nil {
+							return fmt.Errorf("waiting for %q: %w; output=%q", want, err, output.String())
+						}
+					}
+					return nil
+				}
+				if err := until("ghb> "); err != nil {
+					done <- err
+					return
+				}
+				fmt.Fprint(in, "connect target 1800\n")
+				if multiple {
+					if err := until("输入账号序号: "); err != nil {
+						done <- err
+						return
+					}
+					fmt.Fprint(in, "2\n")
+				}
+				if err := until("TARGET-SHELL\n"); err != nil {
+					done <- err
+					return
+				}
+				fmt.Fprint(in, "hello")
+				if err := until("ghb> "); err != nil {
+					done <- err
+					return
+				}
+				fmt.Fprint(in, "exit\n")
+				_, err := io.Copy(io.Discard, out)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("server-name connection stalled")
+			}
+			events, _ := f.c.Store.Events(100)
+			wantAccount := "acct"
+			if multiple {
+				wantAccount = "acct2"
+			}
+			for _, event := range events {
+				if event.Action == "direct.start" && event.Resource == wantAccount {
+					return
+				}
+			}
+			t.Fatal("selected account not connected or audited")
+		})
+	}
+}
+
+func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"target\x1b[2J",                     // ANSI screen control
+		"target\x1b]52;c;c2VjcmV0\a",        // OSC clipboard control
+		"target\rconnect other", "target\n", // line controls
+		"target\t", "target\x00", "target\x7f", "target\u009b2J",
+	} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			asset.Name = name
+			if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+				t.Fatal(err)
+			}
+			xs := f.c.completions(f.l, "connect ", len("connect "))
+			if len(xs) != 1 || xs[0].value != "connect acct" {
+				t.Fatal("unsafe name offered or account ID lost", xs)
+			}
+			// Exercise the actual callback that hands the replacement to x/term.
+			terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+			f.c.setupCompletion(f.l, terminal)
+			line, _, ok := terminal.AutoCompleteCallback("connect tar", len("connect tar"), '\t')
+			if !ok || line != "connect tar" {
+				t.Fatalf("unsafe callback replacement: %q", line)
+			}
+		})
+	}
+	// A display-safe name must remain exact, including Chinese text and spaces.
+	asset.Name = "中文 服务器"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	xs := f.c.completions(f.l, "connect 中文", len("connect 中文"))
+	if len(xs) != 1 || xs[0].value != "connect "+asset.Name {
+		t.Fatal("safe name changed", xs)
+	}
+}
