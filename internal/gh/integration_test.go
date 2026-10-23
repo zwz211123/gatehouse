@@ -590,10 +590,10 @@ func TestTCPDestinationCannotChange(t *testing.T) {
 		t.Fatal("changed TCP destination allowed")
 	}
 }
-func TestSecretsNotStoredAndMasterBinding(t *testing.T) {
+func TestTemporaryPasswordScopeAndMasterBinding(t *testing.T) {
 	f := setup(t)
 	ticket, pw := f.ticket(t, Spec{Modes: []string{"shell"}})
-	rows, e := f.c.Store.db.Query("SELECT data FROM records UNION ALL SELECT data FROM audits")
+	rows, e := f.c.Store.db.Query("SELECT data FROM records WHERE kind != 'ticket-secret' UNION ALL SELECT data FROM audits")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -602,7 +602,7 @@ func TestSecretsNotStoredAndMasterBinding(t *testing.T) {
 		var raw string
 		rows.Scan(&raw)
 		if strings.Contains(raw, pw) {
-			t.Fatal("plaintext ticket password persisted")
+			t.Fatal("temporary password leaked outside ticket-secret")
 		}
 	}
 	rows.Close()

@@ -19,16 +19,27 @@ connect ACCOUNT_ID
 connect ACCOUNT_ID 1800
 proxy create
 proxy list
+proxy show TICKET_ID
+proxy delete TICKET_ID
 proxy revoke TICKET_ID
 web login
 web revoke
 web confirm DIGEST
 whoami
+clear
 help
 exit
 ~~~
 
 `list` 显示获授权的目标账号。`connect` 进入目标终端，退出后回到菜单；可显式缩短最长连接时限。菜单本身不提供任意本机命令或转发。
+
+在交互终端按 Tab 可补全命令、子命令、获授权的账号 ID 和自己的临时凭据 ID。候选带用途说明，支持模糊匹配（例如 `clr` → `clear`），再次按 Tab 循环选择。JSON 和数字选择提示中不启用命令补全。`clear` 清除当前屏幕与终端支持的滚动历史；Ctrl+L 重绘当前屏幕。
+
+`proxy create` 先显示连接信息，再提供数字菜单：`0` 跳过或返回，其他序号查看对应用途的快捷命令，也可选择“显示全部”。查看后可继续选择其他用途。
+
+`proxy list` 显示自己的凭据序号，输入序号可重看连接信息和快捷命令；输入 `d1` 可直接删除序号 1 的凭据，`d all` 批量清理自己的全部可删除凭据。单条和批量采用相同规则：没有活动连接，且已撤销、已过期或连接次数已经全部耗尽，才能删除。仍有剩余次数且未撤销、未过期的凭据会保留，即使之前已经使用过。也可使用 `proxy show TICKET_ID` 和 `proxy delete TICKET_ID`。删除会一并清理密码与失败计数，保留审计日志；活动连接尚未关闭时需稍后重试。
+
+新申请的临时密码按明文保存在受保护的本机数据库中，仅申请人可经普通 SSH 菜单重看；其他用户的 `proxy.read` 仍只允许读取元数据。旧版本只保存密码哈希，升级后仍可认证，但无法恢复密码，需重新申请。导出的备份继续排除所有临时凭据。
 
 ## Web 登录与更改确认
 
@@ -54,7 +65,7 @@ exit
 {"account":"ACCOUNT_ID","modes":["shell"],"pty":"require","ttl":300,"duration":1800,"total":1,"concurrent":1,"sessions":1,"channels":1}
 ~~~
 
-输出包含临时用户名、随机密码、堡垒机入口、目标账号、有效期、用途、主机指纹、撤销命令和完整复制命令。新终端凭这组临时账号密码认证，直接进入已指定的目标终端。
+输出包含临时用户名、随机密码、堡垒机入口、目标账号、有效期、用途、主机指纹和撤销命令，完整复制命令通过数字菜单按需查看。新终端凭这组临时账号密码认证，直接进入已指定的目标终端。
 
 复制命令需要 Bash、OpenSSH 和 sshpass；Debian 客户端可安装 `openssh-client sshpass`。其他工具可填写同一组连接信息，但实际协议请求仍必须符合申请。默认连接次数耗尽或断线不会自动返还；多连接和重连需显式申请并授权。
 
@@ -64,7 +75,7 @@ exit
 {"account":"ACCOUNT_ID","modes":["shell","sftp"],"pty":"allow","file_root":"/srv/work","file_ops":["read","write","list"],"ttl":300,"duration":1800,"total":3,"concurrent":2,"sessions":2,"channels":4,"reconnect":true}
 ~~~
 
-生成的复制命令采用首个模式；其他模式使用同一临时连接信息。工具自动请求的额外命令、环境、通道或转发不会因为工具名称而被放行。
+每个申请用途都会生成独立的复制命令，使用同一临时连接信息；数字菜单可逐个查看或显示全部。每条命令都会单独建立连接，并共享账号的连接次数、并发、重连与有效期限制，显示全部不会自动增加配额。工具自动请求的额外命令、环境、通道或转发不会因为工具名称而被放行。
 
 ## 固定命令
 

@@ -14,6 +14,7 @@ Ingress processes have separate UIDs and restricted Unix sockets. The core check
 
 ## Intended behavior
 
+- New temporary passwords are stored in plaintext in the protected local database so the issuing user can review them through an authenticated ordinary SSH menu. Legacy hash-only records remain usable but cannot be recovered. Temporary records remain excluded from exported backups. Read permission for ticket metadata does not grant password access.
 - Temporary usernames and passwords are intentionally displayed to the requester. A holder may use them within their recorded lifetime, purpose, source and usage limits.
 - Ordinary SSH menu credentials and temporary endpoint credentials are distinct. Temporary accounts cannot mint web login tokens.
 - Full target shells have the remote account's normal authority. Denying SFTP does not prevent an independently authorized shell from writing files.

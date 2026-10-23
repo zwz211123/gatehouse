@@ -304,7 +304,7 @@ func (c *Core) menuSession(l *Live, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	}
 }
 func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
-	io.WriteString(ch, "\r\nGatehouse "+Version+" — 受控跳板终端\r\nlist | connect <账号ID> | proxy create | proxy list | proxy revoke <ID> | web login | help | exit\r\n")
+	io.WriteString(ch, "\r\nGatehouse "+Version+" — 受控跳板终端\r\nlist | connect <账号ID> | proxy create | proxy list | proxy show <ID> | proxy revoke <ID> | proxy delete <ID> | web login | clear | help | exit\r\n")
 	read := func() (string, error) {
 		if terminal != nil {
 			return terminal.ReadLine()
@@ -326,7 +326,20 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 		}
 		return "", fmt.Errorf("input line too long")
 	}
+	// Prompts for JSON and numeric menus must not perform command completion.
+	readPrompt := func() (string, error) {
+		if terminal == nil {
+			return read()
+		}
+		callback := terminal.AutoCompleteCallback
+		terminal.AutoCompleteCallback = nil
+		defer func() { terminal.AutoCompleteCallback = callback }()
+		return read()
+	}
 	for {
+		if terminal != nil {
+			c.setupCompletion(l, terminal)
+		}
 		line, e := read()
 		if e != nil {
 			return
@@ -343,8 +356,10 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 		switch fields[0] {
 		case "exit":
 			return
+		case "clear":
+			io.WriteString(ch, "\x1b[H\x1b[2J\x1b[3J")
 		case "help":
-			io.WriteString(ch, "proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
+			io.WriteString(ch, "Tab 显示带说明的模糊补全候选并循环选择。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
 		case "whoami":
 			io.WriteString(ch, "用户ID: "+l.User+" 来源: "+l.Source+"\r\n")
 		case "list", "search":
@@ -421,7 +436,7 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 			switch fields[1] {
 			case "create":
 				io.WriteString(ch, "请输入完整 JSON 申请（示例与字段见手册）:\r\n")
-				body, e := read()
+				body, e := readPrompt()
 				if e != nil {
 					return
 				}
@@ -430,18 +445,40 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 					io.WriteString(ch, "JSON 错误\r\n")
 					continue
 				}
-				_, _, out, e := c.CreateTicket(l, s)
+				t, pw, _, e := c.CreateTicket(l, s)
 				if e != nil {
 					io.WriteString(ch, e.Error()+"\r\n")
 				} else {
-					io.WriteString(ch, strings.ReplaceAll(out, "\n", "\r\n"))
+					io.WriteString(ch, strings.ReplaceAll(c.ConnectionSummary(t, pw), "\n", "\r\n"))
+					if c.commandPicker(ch, readPrompt, t, pw) != nil {
+						return
+					}
 				}
 			case "list":
-				ts, _ := list[Ticket](c.Store, "ticket")
-				for _, t := range ts {
-					if _, ok := c.Store.AllowedFrom(l.User, "proxy.read", t.Spec.Account, l.Source); ok {
-						io.WriteString(ch, fmt.Sprintf("%s %s %s %v\r\n", t.ID, t.Username, t.State, t.Spec.Modes))
-					}
+				if c.proxyListMenu(l, ch, readPrompt) != nil {
+					return
+				}
+			case "show":
+				if len(fields) != 3 {
+					continue
+				}
+				t, pw, e := c.TicketPassword(l, fields[2])
+				if e != nil {
+					io.WriteString(ch, e.Error()+"\r\n")
+					continue
+				}
+				io.WriteString(ch, strings.ReplaceAll(c.ConnectionSummary(t, pw), "\n", "\r\n"))
+				if c.commandPicker(ch, readPrompt, t, pw) != nil {
+					return
+				}
+			case "delete":
+				if len(fields) != 3 {
+					continue
+				}
+				if e := c.DeleteTicket(l, fields[2]); e != nil {
+					io.WriteString(ch, e.Error()+"\r\n")
+				} else {
+					io.WriteString(ch, "已删除凭据记录，审计日志保留\r\n")
 				}
 			case "revoke":
 				if len(fields) == 3 {

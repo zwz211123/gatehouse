@@ -190,7 +190,8 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	if e = c.Store.Put("ticket", t.ID, t); e != nil {
 		return Ticket{}, "", "", e
 	}
-	if e = c.Store.Put("ticket-secret", t.ID, map[string]string{"hash": hash(t.ID + ":" + pw)}); e != nil {
+	e = c.Store.Put("ticket-secret", t.ID, map[string]string{"password": pw})
+	if e != nil {
 		t.Revoked = true
 		c.Store.Put("ticket", t.ID, t)
 		return Ticket{}, "", "", e
@@ -264,7 +265,7 @@ func (c *Core) Claim(username, pw, source string) (Ticket, error) {
 			continue
 		}
 		var secret map[string]string
-		if c.Store.Get("ticket-secret", t.ID, &secret) != nil || !equalHash(secret["hash"], hash(t.ID+":"+pw)) {
+		if c.Store.Get("ticket-secret", t.ID, &secret) != nil || !ticketPasswordMatches(t.ID, pw, secret) {
 			var failures struct {
 				Count int `json:"count"`
 			}
@@ -333,7 +334,7 @@ func (c *Core) Revoke(actor, id, source string) error {
 	return e
 }
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-func (c *Core) ConnectionOutput(t Ticket, pw string) string {
+func (c *Core) connectionCommand(t Ticket, pw, mode string) string {
 	host := c.Config.PublicHost
 	port := c.Config.PublicPort
 	pub := strings.TrimSpace(string(sshPublic(c.Signer.PublicKey())))
@@ -352,7 +353,6 @@ func (c *Core) ConnectionOutput(t Ticket, pw string) string {
 		transferHost = "[" + host + "]"
 	}
 	cmd := ""
-	mode := t.Spec.Modes[0]
 	if mode == "sftp" {
 		cmd = "sshpass -d 3 sftp " + base + " -P " + fmt.Sprint(port) + " " + quote(t.Username+"@"+transferHost+":"+t.Spec.FileRoot)
 	} else if mode == "scp" {
@@ -386,8 +386,124 @@ func (c *Core) ConnectionOutput(t Ticket, pw string) string {
 			cmd += " " + quote(t.Spec.Command)
 		}
 	}
+	return prefix + cmd + auth + "\n"
+}
+
+func (c *Core) ConnectionSummary(t Ticket, pw string) string {
 	a, b, _, _ := c.ownerAccount(t.Owner, t.Spec.Account)
-	return fmt.Sprintf("申请 ID: %s\n地址: %s\n端口: %d\n用户名: %s\n随机密码: %s\n认证: SSH password\n模式: %s\n目标: %s / %s\n目标账号ID: %s\n跳板机主机指纹: %s\n全部约束参数: %s\n领取截止: %s\n最大寿命: %d秒\n撤销: proxy revoke %s\n\nBash / OpenSSH / sshpass 命令（明文包含密码）:\n%s%s%s\n", t.ID, host, port, t.Username, pw, strings.Join(t.Spec.Modes, ","), b.Name, a.Name, t.Spec.Account, ssh.FingerprintSHA256(c.Signer.PublicKey()), encode(t.Spec), time.Unix(t.Expires, 0).Format(time.RFC3339), t.Spec.Duration, t.ID, prefix, cmd, auth)
+	return fmt.Sprintf("申请 ID: %s\n状态: %s（已撤销: %t，已用连接: %d/%d）\n地址: %s\n端口: %d\n用户名: %s\n随机密码: %s\n认证: SSH password\n模式: %s\n目标: %s / %s\n目标账号ID: %s\n堡垒机主机指纹: %s\n全部约束参数: %s\n领取截止: %s\n最大寿命: %d秒\n撤销: proxy revoke %s\n", t.ID, t.State, t.Revoked, t.Used, t.Spec.Total, c.Config.PublicHost, c.Config.PublicPort, t.Username, pw, strings.Join(t.Spec.Modes, ","), b.Name, a.Name, t.Spec.Account, ssh.FingerprintSHA256(c.Signer.PublicKey()), encode(t.Spec), time.Unix(t.Expires, 0).Format(time.RFC3339), t.Spec.Duration, t.ID)
+}
+
+func (c *Core) ConnectionOutput(t Ticket, pw string) string {
+	out := c.ConnectionSummary(t, pw)
+	for _, mode := range t.Spec.Modes {
+		out += "\nBash / OpenSSH / sshpass 命令（明文包含密码）[" + mode + "]:\n" + c.connectionCommand(t, pw, mode)
+	}
+	return out
+}
+
+// Only the issuing user may recover passwords, even when another user can read ticket metadata.
+func (c *Core) TicketPassword(l *Live, id string) (Ticket, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var t Ticket
+	if c.Store.Get("ticket", id, &t) != nil || t.Owner != l.User || !c.sourceAlive(l.ID) {
+		return Ticket{}, "", ErrDenied
+	}
+	var secret map[string]string
+	if c.Store.Get("ticket-secret", id, &secret) != nil || secret["password"] == "" {
+		return t, "", errorf("旧凭据未保存可恢复密码，请重新申请")
+	}
+	if e := c.Audit(l.User, "proxy.credentials", id, "ok", l.Source, ""); e != nil {
+		return t, "", e
+	}
+	return t, secret["password"], nil
+}
+
+// Only inactive revoked, expired, or fully consumed tickets may be deleted.
+func (c *Core) DeleteTicket(l *Live, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.sourceAlive(l.ID) {
+		return ErrDenied
+	}
+	var t Ticket
+	if c.Store.Get("ticket", id, &t) != nil || t.Owner != l.User {
+		return ErrDenied
+	}
+	if !ticketDeletable(t, now()) {
+		return errorf("只能删除无活动连接且已撤销、已过期或连接次数耗尽的凭据")
+	}
+	if c.ticketConnected(id) {
+		return errorf("仍有活动连接，请稍后删除")
+	}
+	return c.deleteTicketLocked(l, id)
+}
+
+func ticketDeletable(t Ticket, at int64) bool {
+	return t.Active == 0 && (t.Revoked || t.Expires <= at || (t.Spec.Total > 0 && t.Used >= t.Spec.Total))
+}
+
+// Caller holds c.mu so authentication cannot claim a ticket during deletion.
+func (c *Core) ticketConnected(id string) bool {
+	for _, live := range c.live {
+		if live.Ticket == id {
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteFinishedTickets applies exactly the same eligibility rules as single deletion.
+func (c *Core) DeleteFinishedTickets(l *Live) (deleted, skipped int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.sourceAlive(l.ID) {
+		return 0, 0, ErrDenied
+	}
+	tickets, e := list[Ticket](c.Store, "ticket")
+	if e != nil {
+		return 0, 0, e
+	}
+	for _, t := range tickets {
+		if t.Owner != l.User {
+			continue
+		}
+		if !ticketDeletable(t, now()) || c.ticketConnected(t.ID) {
+			skipped++
+			continue
+		}
+		if e = c.deleteTicketLocked(l, t.ID); e != nil {
+			return deleted, skipped, e
+		}
+		deleted++
+	}
+	return deleted, skipped, nil
+}
+
+func (c *Core) deleteTicketLocked(l *Live, id string) error {
+	tx, e := c.Store.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	event := Event{Time: now(), Actor: l.User, Action: "proxy.delete", Resource: id, Result: "ok", Source: l.Source}
+	if c.auditFailed.Load() {
+		return errorf("audit unavailable")
+	}
+	if _, e = tx.Exec("INSERT INTO audits(data)VALUES(?)", encode(event)); e != nil {
+		c.auditFailed.Store(true)
+		return e
+	}
+	if _, e = tx.Exec("DELETE FROM records WHERE id=? AND kind IN ('ticket','ticket-secret','ticket-failures')", id); e != nil {
+		return e
+	}
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	c.byteCounters.Delete(id)
+	c.paceCounters.Delete(id)
+	return nil
 }
 
 func tcpResource(s Spec) string {
@@ -396,4 +512,12 @@ func tcpResource(s Spec) string {
 		route = "jump:"
 	}
 	return s.Account + ":tcp:" + route + net.JoinHostPort(s.TCPHost, fmt.Sprint(s.TCPPort))
+}
+
+// Legacy records retain their original hash; new temporary passwords are stored directly.
+func ticketPasswordMatches(id, pw string, secret map[string]string) bool {
+	if saved, ok := secret["password"]; ok {
+		return equalHash(saved, pw)
+	}
+	return equalHash(secret["hash"], hash(id+":"+pw))
 }
