@@ -24,11 +24,14 @@ NAT 部署时，`public_host` 和 `public_port` 填写客户端可达的映射�
 
 ## 安装包
 
-从 Releases 获取对应架构的完整 bundle，解压到独立目录。以下为 0.2.1 amd64 示例：
+从 [Releases](https://github.com/zwz211123/gatehouse/releases) 获取对应架构的完整 bundle，解压到独立目录。
+
+{{ download_notice }}
 
 ~~~bash
 mkdir gatehouse-install
-tar -xzf gatehouse-0.2.1-amd64.tar.gz -C gatehouse-install
+GATEHOUSE_VERSION='{{ download_version }}'
+tar -xzf "gatehouse-${GATEHOUSE_VERSION}-amd64.tar.gz" -C gatehouse-install
 cd gatehouse-install
 sha256sum -c SHA256SUMS-amd64
 sudo bash install.sh

@@ -22,11 +22,14 @@ Web 管理器没有账号密码、TOTP 或 Passkey 登录。只有已登录普�
 
 需要运行 systemd 的 Debian 类 Linux、管理员接入公钥，以及匹配 Web 域名的 TLS 证书与私钥。默认产品端口为 SSH `2222`、HTTPS `8443`，保留系统原有 SSH。
 
+下面将 `REPLACE_WITH_DOWNLOADED_VERSION` 替换为实际下载包的版本号（不带 `v`）。
+
 从本仓库的 [Releases](https://github.com/zwz211123/gatehouse/releases) 下载对应架构的安装包；若尚无发布资产，可按[构建文档](docs/development.md)自行生成。
 
 ~~~bash
 mkdir gatehouse-install
-tar -xzf gatehouse-0.2.1-amd64.tar.gz -C gatehouse-install
+GATEHOUSE_VERSION=REPLACE_WITH_DOWNLOADED_VERSION
+tar -xzf "gatehouse-${GATEHOUSE_VERSION}-amd64.tar.gz" -C gatehouse-install
 cd gatehouse-install
 sha256sum -c SHA256SUMS-amd64
 sudo bash install.sh

@@ -84,3 +84,13 @@ jobs:
             --title "Gatehouse $RELEASE_TAG" \
             --generate-notes \
             "${args[@]}"
+  documentation:
+    needs: [validate, publish]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+      channel: ${{ inputs.prerelease && 'prerelease' || 'release' }}

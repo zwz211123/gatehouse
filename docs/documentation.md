@@ -21,6 +21,7 @@ python3 -m venv .venv-docs
 python -m pip install -r requirements-docs.txt
 python scripts/prepare_docs.py
 python -m mkdocs build --strict
+python scripts/check_docs.py
 python -m mkdocs serve --dev-addr 127.0.0.1:8000
 ~~~
 
@@ -33,3 +34,19 @@ python -m mkdocs serve --dev-addr 127.0.0.1:8000
 `.github/workflows/docs.yml` 在文档相关文件更新时自动构建，PR 只校验，推送 `main` 或手动运行才发布。部署使用 `github-pages` 环境，仅部署任务拥有 `pages: write` 和 `id-token: write`。
 
 公开站点预期地址为 `https://zwz211123.github.io/gatehouse/`。更换仓库名或绑定域名后，应同步修改 `mkdocs.yml` 的 `site_url`。文档站的 HTTPS 与实际堡垒机 Web 的 TLS 是两套独立配置。
+
+## CI 注入文档版本
+
+不需要为了更新网站逐页替换版本号。Release 工作流在发布成功后，把已校验的 `version` 输出传给 Documentation 可复用工作流；文档版本必须与该次检出的源码一致，否则构建失败。应用程序、打包脚本及 Release 的现有版本校验仍按原方式维护。
+
+普通推送、PR 或独立手动构建从 `internal/gh/config.go` 读取版本，标注“开发版 / 未发布”。Release 调用时标注正式版或预发布版。本站仍使用一个地址，展示最近一次成功部署的内容；开发版部署会替换之前的正式版页面，当前不建立多版本归档。
+
+首页和开发产物路径使用 `{{ docs_version }}`，安装示例使用独立的 `{{ download_version }}`。这些是构建变量；GitHub 原始 Markdown 中会显示占位符，以生成的网站为完整阅读版本。升级历史、CHANGELOG、旧版迁移测试和工具链版本不会参与替换。
+
+构建会查询 GitHub 最新正式 Release，并确认存在对应 amd64 bundle。开发版或预发布版的安装示例优先使用该已发布版本；尚无可用正式包时，会明确要求先自行构建，不声称下载文件已经存在。正式 Release 成功调用时，安装示例使用刚发布的版本。
+
+本地默认按开发版构建；可以设置 `DOCS_VERSION` 和 `DOCS_CHANNEL` 来复现 CI 元数据（版本必须匹配源码，channel 为 `development`、`release` 或 `prerelease`）。本地不自动查询 GitHub；可将官方 Release API 返回值保存为 `build/latest-release.json` 复现下载版本选择，删除该文件则恢复“未确认发布包”的提示。CI 每次重新获取该文件，不复用旧结果。
+
+`python scripts/test_docs.py` 覆盖版本不匹配、开发/正式/预发布状态、下载包选择与历史版本保留。`python scripts/check_docs.py` 在构建后验证真实 HTML 中的版本字段、安装变量、首页按钮和本地链接。每次 CI 的 Summary 会显示本次文档版本、渠道及安装示例版本。
+
+如果 Release 已发布而文档阶段失败，可仅重跑失败的文档任务；不要重新创建相同标签的 Release。独立手动运行 Documentation 仍按开发版构建。

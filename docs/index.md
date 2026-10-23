@@ -11,7 +11,9 @@
 
 </div>
 
-Gatehouse 面向运行 systemd 的 Debian 类 Linux，提供 `amd64`、`arm64` 安装包。当前文档对应 **0.2.1**，Web 管理器为中文界面。
+Gatehouse 面向运行 systemd 的 Debian 类 Linux，提供 `amd64`、`arm64` 安装包。Web 管理器为中文界面。
+
+{{ docs_notice }}
 
 ## 从这里开始
 
