@@ -1,6 +1,6 @@
 # Gatehouse
 
-[English](README.en.md) · [安装](docs/installation.md) · [使用](docs/usage.md) · [权限](docs/permissions.md) · [升级](UPGRADE.md)
+[文档网站](https://zwz211123.github.io/gatehouse/) · [English](README.en.md) · [快速上手](docs/quickstart.md) · [安装](docs/installation.md) · [使用](docs/usage.md) · [权限](docs/permissions.md) · [升级](UPGRADE.md)
 
 面向 Debian 与衍生系统的 SSH 堡垒机。用户通过公钥进入受控菜单，再连接获授权的目标服务器；也可以申请用途固定的临时账号，让标准 SSH 客户端和第三方工具直接连接指定目标。
 
