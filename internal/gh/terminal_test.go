@@ -456,3 +456,44 @@ func TestMenuConnectByServerName(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"target\x1b[2J",                     // ANSI screen control
+		"target\x1b]52;c;c2VjcmV0\a",        // OSC clipboard control
+		"target\rconnect other", "target\n", // line controls
+		"target\t", "target\x00", "target\x7f", "target\u009b2J",
+	} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			asset.Name = name
+			if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+				t.Fatal(err)
+			}
+			xs := f.c.completions(f.l, "connect ", len("connect "))
+			if len(xs) != 1 || xs[0].value != "connect acct" {
+				t.Fatal("unsafe name offered or account ID lost", xs)
+			}
+			// Exercise the actual callback that hands the replacement to x/term.
+			terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+			f.c.setupCompletion(f.l, terminal)
+			line, _, ok := terminal.AutoCompleteCallback("connect tar", len("connect tar"), '\t')
+			if !ok || line != "connect tar" {
+				t.Fatalf("unsafe callback replacement: %q", line)
+			}
+		})
+	}
+	// A display-safe name must remain exact, including Chinese text and spaces.
+	asset.Name = "中文 服务器"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	xs := f.c.completions(f.l, "connect 中文", len("connect 中文"))
+	if len(xs) != 1 || xs[0].value != "connect "+asset.Name {
+		t.Fatal("safe name changed", xs)
+	}
+}

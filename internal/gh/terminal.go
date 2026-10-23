@@ -159,6 +159,15 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 			}
 		}
 	}
+	// Completion values are redrawn verbatim by x/term, unlike menu labels.
+	// Omit unsafe values instead of rewriting names and changing their meaning.
+	safeChoices := choices[:0]
+	for _, x := range choices {
+		if terminalLabel(x.value) == x.value {
+			safeChoices = append(safeChoices, x)
+		}
+	}
+	choices = safeChoices
 	var out []completion
 	for _, x := range choices {
 		if strings.HasPrefix(strings.ToLower(x.value), strings.ToLower(query)) {
