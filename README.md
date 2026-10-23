@@ -2,7 +2,7 @@
 
 [English](README.en.md) · [安装](docs/installation.md) · [使用](docs/usage.md) · [权限](docs/permissions.md) · [升级](UPGRADE.md)
 
-面向 Debian 与衍生系统的 SSH 跳板机。用户通过公钥进入受控菜单，再连接获授权的目标服务器；也可以申请用途固定的临时账号，让标准 SSH 客户端和第三方工具直接连接指定目标。
+面向 Debian 与衍生系统的 SSH 堡垒机。用户通过公钥进入受控菜单，再连接获授权的目标服务器；也可以申请用途固定的临时账号，让标准 SSH 客户端和第三方工具直接连接指定目标。
 
 Web 管理器没有账号密码、TOTP 或 Passkey 登录。只有已登录普通 SSH 菜单的用户，才能执行 `web login` 获取一次性 token。临时账号不能签发 Web token。
 

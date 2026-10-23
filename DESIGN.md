@@ -1,6 +1,6 @@
 # 架构与信任边界
 
-Gatehouse 是同一 Linux 主机上的单实例 SSH 跳板机。公开入口只有产品 SSH 与 HTTPS；核心服务通过 Unix socket 提供内部通道，不暴露远程 TCP 管理 API。
+Gatehouse 是同一 Linux 主机上的单实例 SSH 堡垒机。公开入口只有产品 SSH 与 HTTPS；核心服务通过 Unix socket 提供内部通道，不暴露远程 TCP 管理 API。
 
 ```mermaid
 flowchart TD

@@ -66,7 +66,7 @@ Web 表单按名称选择对象，存储的关联值仍是稳定 ID。不能读�
 | exec | `ACCOUNT_ID:exec:SHA256(command)` |
 | 文件目录 | `ACCOUNT_ID:file:/srv/files` |
 | 经目标 SSH 的 TCP | `ACCOUNT_ID:tcp:IP:PORT` |
-| 跳板机直拨 TCP | `ACCOUNT_ID:tcp:jump:IP:PORT` |
+| 堡垒机直拨 TCP | `ACCOUNT_ID:tcp:jump:IP:PORT` |
 
 exec 摘要为原始 UTF-8 命令的 SHA-256 小写十六进制；不进行空白规范化。文件用途不是模糊目录前缀通配，较小目录应签发对应精确资源。TCP 使用申请中固定的数字地址、路由和端口。
 
