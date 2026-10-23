@@ -3,6 +3,7 @@ package gh
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -10,6 +11,92 @@ import (
 )
 
 type completion struct{ value, description string }
+
+type connectChoice struct {
+	account Account
+	asset   Asset
+}
+
+// Account IDs take precedence over server names, including unavailable IDs.
+func (c *Core) connectChoices(l *Live, ref string) ([]connectChoice, error) {
+	accounts, err := list[Account](c.Store, "account")
+	if err != nil {
+		return nil, err
+	}
+	byID := false
+	for _, a := range accounts {
+		if a.ID == ref {
+			accounts = []Account{a}
+			byID = true
+			break
+		}
+	}
+	var choices []connectChoice
+	for _, a := range accounts {
+		if _, ok := c.Store.AllowedFrom(l.User, "shell.direct", a.ID, l.Source); !ok {
+			continue
+		}
+		_, asset, _, err := c.ownerAccount(l.User, a.ID)
+		if err == nil && (byID || asset.Name == ref) {
+			choices = append(choices, connectChoice{a, asset})
+		}
+	}
+	return choices, nil
+}
+
+func (c *Core) connectTarget(l *Live, w io.Writer, read func() (string, error), args string) (string, int, error) {
+	duration := 7200
+	if args == "" {
+		return "", 0, fmt.Errorf("用法: connect <账号ID或服务器名> [秒数]")
+	}
+	// Prefer a complete name (including spaces or a numeric suffix) before
+	// interpreting the last word as an optional duration.
+	choices, err := c.connectChoices(l, args)
+	if err != nil {
+		return "", 0, err
+	}
+	if len(choices) == 0 {
+		if i := strings.LastIndexAny(args, " \t"); i >= 0 {
+			choices, err = c.connectChoices(l, strings.TrimSpace(args[:i]))
+			if err != nil {
+				return "", 0, err
+			}
+			if len(choices) > 0 {
+				duration, err = strconv.Atoi(args[i+1:])
+				if err != nil || duration < 10 {
+					return "", 0, fmt.Errorf("连接时限无效")
+				}
+			}
+		}
+	}
+	if len(choices) == 0 {
+		return "", 0, fmt.Errorf("没有匹配的可用账号或权限不足")
+	}
+	if len(choices) == 1 {
+		return choices[0].account.ID, duration, nil
+	}
+	io.WriteString(w, "可用账号（0 返回）:\r\n")
+	for i, x := range choices {
+		fmt.Fprintf(w, "%d. %s / %s  %s:%d  %s\r\n", i+1, terminalLabel(x.asset.Name), terminalLabel(x.account.Name), terminalLabel(x.asset.Host), x.asset.Port, terminalLabel(x.account.ID))
+	}
+	for {
+		io.WriteString(w, "输入账号序号: ")
+		line, err := read()
+		if err != nil {
+			return "", 0, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || line == "0" {
+			return "", duration, nil
+		}
+		n, err := strconv.Atoi(line)
+		if err == nil && n >= 1 && n <= len(choices) {
+			// directMenu rechecks authorization and target availability before dialing.
+			return choices[n-1].account.ID, duration, nil
+		}
+		io.WriteString(w, "无效选择\r\n")
+	}
+}
 
 // Match prefixes first, then fish-style ordered subsequences.
 func completionMatch(value, query string) bool {
@@ -30,6 +117,14 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 	start := strings.LastIndexAny(prefix, " \t") + 1
 	query := prefix[start:]
 	words := strings.Fields(prefix[:start])
+	if strings.HasPrefix(prefix, "connect ") || strings.HasPrefix(prefix, "connect\t") {
+		start = len("connect")
+		for start < len(prefix) && (prefix[start] == ' ' || prefix[start] == '\t') {
+			start++
+		}
+		query = prefix[start:]
+		words = []string{"connect"}
+	}
 	var choices []completion
 	if len(words) == 0 {
 		choices = []completion{{"list", "列出可用账号"}, {"search", "列出可用账号"}, {"info", "账号详情"}, {"connect", "连接目标账号"}, {"proxy", "临时账号管理"}, {"web", "Web 管理"}, {"whoami", "当前身份"}, {"clear", "清除终端输出"}, {"help", "帮助"}, {"exit", "退出"}}
@@ -43,9 +138,17 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 			action = "account.read"
 		}
 		accounts, _ := list[Account](c.Store, "account")
+		servers := map[string]bool{}
 		for _, a := range accounts {
 			if _, ok := c.Store.AllowedFrom(l.User, action, a.ID, l.Source); ok {
 				choices = append(choices, completion{a.ID, a.Name})
+				if words[0] == "connect" {
+					_, asset, _, err := c.ownerAccount(l.User, a.ID)
+					if err == nil && asset.Name != "" && !servers[asset.Name] {
+						servers[asset.Name] = true
+						choices = append(choices, completion{asset.Name, "服务器"})
+					}
+				}
 			}
 		}
 	} else if len(words) == 2 && words[0] == "proxy" && contains([]string{"show", "revoke", "delete"}, words[1]) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,7 +343,7 @@ func (c *Core) menuSession(l *Live, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	}
 }
 func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
-	io.WriteString(ch, "\r\nGatehouse "+Version+" — 受控跳板终端\r\nlist | connect <账号ID> | proxy create | proxy list | proxy show <ID> | proxy revoke <ID> | proxy delete <ID> | web login | clear | help | exit\r\n")
+	io.WriteString(ch, "\r\nGatehouse "+Version+" — 受控跳板终端\r\nlist | connect <账号ID或服务器名> [秒数] | proxy create | proxy list | proxy show <ID> | proxy revoke <ID> | proxy delete <ID> | web login | clear | help | exit\r\n")
 	read := func() (string, error) {
 		if terminal != nil {
 			return terminal.ReadLine()
@@ -399,7 +398,7 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 		case "clear":
 			io.WriteString(ch, "\x1b[H\x1b[2J\x1b[3J")
 		case "help":
-			io.WriteString(ch, "Tab 显示带说明的模糊补全候选并循环选择。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
+			io.WriteString(ch, "connect <账号ID或服务器名> [秒数]：单账号直接连接，多账号按序号选择，0 返回。Tab 显示带说明的模糊补全候选并循环选择。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
 		case "whoami":
 			io.WriteString(ch, "用户ID: "+l.User+" 来源: "+l.Source+"\r\n")
 		case "list", "search":
@@ -425,23 +424,14 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 				}
 			}
 		case "connect":
-			if len(fields) < 2 || len(fields) > 3 {
+			account, duration, err := c.connectTarget(l, ch, readPrompt, strings.TrimSpace(strings.TrimPrefix(line, "connect")))
+			if err != nil {
+				io.WriteString(ch, err.Error()+"\r\n")
 				continue
 			}
-			if _, ok := c.Store.AllowedFrom(l.User, "shell.direct", fields[1], l.Source); !ok {
-				io.WriteString(ch, "权限不足\r\n")
-				continue
+			if account != "" {
+				c.directMenu(l, ch, account, duration)
 			}
-			duration := 7200
-			if len(fields) == 3 {
-				var err error
-				duration, err = strconv.Atoi(fields[2])
-				if err != nil {
-					io.WriteString(ch, "连接时限无效\r\n")
-					continue
-				}
-			}
-			c.directMenu(l, ch, fields[1], duration)
 		case "web":
 			if len(fields) < 2 {
 				continue
