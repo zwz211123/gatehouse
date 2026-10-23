@@ -2,7 +2,13 @@
 
 ## Unreleased
 
+## 0.3.1
+
+- Count currently open SSH channels instead of cumulative channel opens; release capacity on close and setup failure for TCP forwarding and session channels.
 - Render bundled and Debian package documentation with the package build identity; correct documentation versioning instructions while preserving source templates and historical versions.
+
+## 0.3.0
+
 - Inject release versions and source commits at build time; use explicit development identities for ordinary CI and local builds.
 - Derive Debian versions, installer package selection, source archive metadata and documentation from one build identity, with prerelease ordering and publish-time cross-checks.
 

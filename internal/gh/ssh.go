@@ -168,7 +168,6 @@ func (c *Core) ServeSSH(raw net.Conn) {
 	}()
 	var sessions atomic.Int32
 	var active atomic.Int32
-	var total atomic.Int32
 	var wg sync.WaitGroup
 	defer func() { l.Close(); wg.Wait() }()
 	for ch := range channels {
@@ -193,39 +192,80 @@ func (c *Core) ServeSSH(raw net.Conn) {
 			ch.Reject(ssh.Prohibited, "authorization expired")
 			return
 		}
-		if int(total.Add(1)) > ticket.Spec.Channels || int(active.Add(1)) > ticket.Spec.Channels {
+		if int(active.Add(1)) > ticket.Spec.Channels {
+			active.Add(-1)
 			ch.Reject(ssh.Prohibited, "channel limit")
 			c.FailTicket(l, "channel quota exceeded")
 			return
 		}
+		release := sync.OnceFunc(func() { active.Add(-1) })
+		ch = countedNewChannel{NewChannel: ch, release: release}
 		switch ch.ChannelType() {
 		case "session":
 			if int(sessions.Add(1)) > ticket.Spec.Sessions {
+				release()
 				ch.Reject(ssh.Prohibited, "session limit")
 				c.FailTicket(l, "session quota exceeded")
 				return
 			}
 			channel, requests, e := ch.Accept()
 			if e != nil {
-				active.Add(-1)
+				release()
 				continue
 			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				defer active.Add(-1)
+				defer release()
 				defer channel.Close()
 				c.proxySession(l, ticket, channel, requests)
 			}()
 		case "direct-tcpip":
 			wg.Add(1)
-			go func(n ssh.NewChannel) { defer wg.Done(); defer active.Add(-1); c.tcpChannel(l, ticket, n) }(ch)
+			go func(n ssh.NewChannel) {
+				defer wg.Done()
+				defer release()
+				c.tcpChannel(l, ticket, n)
+			}(ch)
 		default:
+			release()
 			ch.Reject(ssh.Prohibited, "channel type denied")
 			c.FailTicket(l, "unexpected channel")
 			return
 		}
 	}
+}
+
+// Release capacity before sending channel close, so a peer that observes the
+// close can immediately open a replacement. The callback is idempotent and is
+// also deferred by the handler to cover setup failures and early returns.
+type countedChannel struct {
+	ssh.Channel
+	release func()
+}
+
+type countedNewChannel struct {
+	ssh.NewChannel
+	release func()
+}
+
+func (n countedNewChannel) Accept() (ssh.Channel, <-chan *ssh.Request, error) {
+	channel, requests, err := n.NewChannel.Accept()
+	if err != nil {
+		n.release()
+		return nil, nil, err
+	}
+	return countedChannel{Channel: channel, release: n.release}, requests, nil
+}
+
+func (n countedNewChannel) Reject(reason ssh.RejectionReason, message string) error {
+	n.release()
+	return n.NewChannel.Reject(reason, message)
+}
+
+func (c countedChannel) Close() error {
+	c.release()
+	return c.Channel.Close()
 }
 
 type bufferConn struct {
