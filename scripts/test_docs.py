@@ -21,7 +21,7 @@ class DocumentationVersionTests(unittest.TestCase):
         self.root_patch = patch.object(prepare_docs, 'ROOT', self.root)
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
-        self.env_patch = patch.dict(os.environ, {'DOCS_VERSION': '', 'DOCS_CHANNEL': ''})
+        self.env_patch = patch.dict(os.environ, {'DOCS_VERSION': '', 'DOCS_CHANNEL': '', 'GATEHOUSE_VERSION': '', 'GATEHOUSE_COMMIT': '', 'SOURCE_DATE_EPOCH': ''})
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
 
@@ -33,7 +33,7 @@ class DocumentationVersionTests(unittest.TestCase):
 
     def test_development_version_does_not_invent_release(self):
         data = prepare_docs.metadata()
-        self.assertEqual(data['docs_version'], '7.8.9')
+        self.assertEqual(data['docs_version'], 'dev')
         self.assertIn('开发版 / 未发布', data['docs_notice'])
         self.assertIn('当前未确认', data['download_notice'])
 
@@ -42,6 +42,11 @@ class DocumentationVersionTests(unittest.TestCase):
         data = prepare_docs.metadata()
         self.assertEqual(data['download_version'], '7.8.8')
         self.assertIn('新增功能可能尚不包含', data['download_notice'])
+
+    def test_release_version_has_no_source_constant_dependency(self):
+        (self.root / 'internal/gh/config.go').unlink()
+        with patch.dict(os.environ, {'DOCS_VERSION': '9.0.0', 'DOCS_CHANNEL': 'release'}):
+            self.assertEqual(prepare_docs.metadata()['docs_version'], '9.0.0')
 
     def test_release_ci_version_is_used(self):
         self.release()
@@ -52,7 +57,7 @@ class DocumentationVersionTests(unittest.TestCase):
 
     def test_prerelease_keeps_stable_download(self):
         self.release()
-        with patch.dict(os.environ, {'DOCS_CHANNEL': 'prerelease'}):
+        with patch.dict(os.environ, {'DOCS_VERSION': '7.8.9-rc.1', 'DOCS_CHANNEL': 'prerelease'}):
             data = prepare_docs.metadata()
         self.assertEqual(data['download_version'], '7.8.8')
         self.assertIn('预发布版', data['docs_notice'])
@@ -63,8 +68,9 @@ class DocumentationVersionTests(unittest.TestCase):
                 self.release(**override)
                 self.assertIn('当前未确认', prepare_docs.metadata()['download_notice'])
 
-    def test_wrong_ci_version_and_unknown_channel_fail(self):
-        for override in ({'DOCS_VERSION': '7.8.10'}, {'DOCS_VERSION': 'bad'},
+    def test_invalid_version_and_channel_fail(self):
+        for override in ({'DOCS_VERSION': 'bad'}, {'DOCS_CHANNEL': 'release'},
+                         {'DOCS_VERSION': '7.8.9', 'DOCS_CHANNEL': 'prerelease'},
                          {'DOCS_CHANNEL': 'unknown'}):
             with self.subTest(override=override), patch.dict(os.environ, override):
                 with self.assertRaises(ValueError):
@@ -81,7 +87,7 @@ class DocumentationVersionTests(unittest.TestCase):
         with patch.object(prepare_docs, 'OUTPUT', output):
             prepare_docs.main()
         text = (output / 'index.md').read_text()
-        self.assertIn('VERSION=7.8.9', text)
+        self.assertIn('VERSION=dev', text)
         self.assertIn(history, text)
         self.assertEqual((output / 'upgrade.md').read_text(), history)
 

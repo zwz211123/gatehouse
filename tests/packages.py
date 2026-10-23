@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 import json,os,pathlib,subprocess,tempfile
 ROOT=pathlib.Path(__file__).resolve().parent.parent
+INFO=json.loads((ROOT/'build/version.json').read_text())
+VERSION=INFO['version']
+PACKAGE_VERSION=INFO['package_version']
 def run(*a):return subprocess.check_output(a,text=True,stderr=subprocess.STDOUT)
-debs=sorted((ROOT/'dist'/'0.2.1').glob('*.deb'));assert len(debs)==9,len(debs)
+debs=sorted((ROOT/'dist'/VERSION).glob('*.deb'));assert len(debs)==9,len(debs)
 summary=[]
 for deb in debs:
     fields=run('dpkg-deb','-f',str(deb),'Package','Version','Architecture');name=run('dpkg-deb','-f',str(deb),'Package').strip();arch=run('dpkg-deb','-f',str(deb),'Architecture').strip()
-    assert run('dpkg-deb','-f',str(deb),'Version').strip()=='0.2.1'
+    assert run('dpkg-deb','-f',str(deb),'Version').strip()==PACKAGE_VERSION
     assert name in ['gatehouse','gatehouse-core','gatehouse-ssh','gatehouse-web','gatehouse-cli']
     assert arch in (['all'] if name=='gatehouse' else ['amd64','arm64'])
     depends=run('dpkg-deb','-f',str(deb),'Depends')
     if name=='gatehouse':
-        for part in ['core','ssh','web','cli']:assert 'gatehouse-'+part+' (= 0.2.1)' in depends
-    elif name!='gatehouse-core':assert 'gatehouse-core (= 0.2.1)' in depends
+        for part in ['core','ssh','web','cli']:assert 'gatehouse-'+part+f' (= {PACKAGE_VERSION})' in depends
+    elif name!='gatehouse-core':assert f'gatehouse-core (= {PACKAGE_VERSION})' in depends
     with tempfile.TemporaryDirectory(prefix='ghb-package-') as td:
         t=pathlib.Path(td);subprocess.run(['dpkg-deb','-R',str(deb),str(t)],check=True,stdout=subprocess.DEVNULL)
         assert not (t/'etc/gatehouse/config.json').exists(),'package would overwrite existing configuration'
@@ -28,6 +31,7 @@ for deb in debs:
                     qemu=os.environ.get('GHB_QEMU')
                     if not qemu:raise RuntimeError('GHB_QEMU required for arm64 package execution')
                     prefix=[qemu]
-                assert run(*prefix,str(binary),'version').strip()=='0.2.1'
+                assert run(*prefix,str(binary),'version').strip()==VERSION
+                assert json.loads(run(*prefix,str(binary),'version','--json'))=={'version':VERSION,'commit':INFO['commit']}
         summary.append({'package':name,'architecture':arch,'control':'passed','shell_syntax':'passed','elf':'static executable' if arch!='all' else 'meta package'})
 print(json.dumps(summary,indent=2))

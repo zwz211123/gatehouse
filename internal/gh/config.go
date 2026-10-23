@@ -11,7 +11,9 @@ import (
 	"strings"
 )
 
-const Version = "0.2.1"
+// Set by the build pipeline; direct go builds are explicitly development builds.
+var Version = "dev"
+var Commit = "unknown"
 
 type Config struct {
 	Data           string `json:"data"`

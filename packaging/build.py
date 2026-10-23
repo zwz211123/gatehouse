@@ -2,17 +2,28 @@
 """Build static amd64/arm64 executables and Debian packages; no host installs."""
 import hashlib,json,os,pathlib,shutil,subprocess,tarfile,sys
 ROOT=pathlib.Path(__file__).resolve().parent.parent
-VERSION='0.2.1'
+from versioning import resolve
+INFO=resolve()
+VERSION=INFO['version']
+PACKAGE_VERSION=INFO['package_version']
+INFO_PATH=ROOT/'build/version.json'
+INFO_PATH.parent.mkdir(parents=True,exist_ok=True)
+if '--repack-only' in sys.argv:
+    if not INFO_PATH.exists() or json.loads(INFO_PATH.read_text())!=INFO:
+        raise SystemExit('Repack identity differs from compiled artifacts; rebuild first')
+else:
+    INFO_PATH.write_text(json.dumps(INFO,indent=2)+'\n')
 OUT=ROOT/'dist'/VERSION
 GO=os.environ.get('GATEHOUSE_GO','go')
-OUT.mkdir(parents=True,exist_ok=True)
 REPACK='--repack-only' in sys.argv
-os.environ.setdefault('SOURCE_DATE_EPOCH','1792627200')
+if not REPACK:shutil.rmtree(OUT,ignore_errors=True)
+OUT.mkdir(parents=True,exist_ok=True)
+os.environ['SOURCE_DATE_EPOCH']=str(INFO['source_date_epoch'])
 def run(*args,**kw): subprocess.run(args,check=True,**kw)
 def write(path,text,mode=0o644):
     path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text);path.chmod(mode)
 def control(stage,name,arch,depends,description):
-    write(stage/'DEBIAN/control',f'Package: {name}\nVersion: {VERSION}\nArchitecture: {arch}\nMaintainer: Gatehouse Project <gatehouse@localhost>\nDepends: {depends}\nSection: admin\nPriority: optional\nDescription: {description}\n')
+    write(stage/'DEBIAN/control',f'Package: {name}\nVersion: {PACKAGE_VERSION}\nArchitecture: {arch}\nMaintainer: Gatehouse Project <gatehouse@localhost>\nDepends: {depends}\nSection: admin\nPriority: optional\nDescription: {description}\n')
 def unit(part):
     user={'core':'gatehouse-core','ssh':'gatehouse-ssh','web':'gatehouse-web'}[part]
     core=part=='core'
@@ -83,10 +94,10 @@ for arch in ([] if REPACK else ['amd64','arm64']):
         # Compile outside the archive tree: linker/copy temporary files must
         # never be picked up by dpkg-deb while the tree is being archived.
         compiled=build/('compiled-'+part)
-        run(GO,'build','-trimpath','-buildvcs=false','-ldflags',f'-s -w -X main.role={part}','-o',str(compiled),'./cmd/gatehouse',cwd=ROOT,env=env)
+        run(GO,'build','-trimpath','-buildvcs=false','-ldflags',f"-s -w -X main.role={part} -X github.com/zwz211123/gatehouse/internal/gh.Version={VERSION} -X github.com/zwz211123/gatehouse/internal/gh.Commit={INFO['commit']}",'-o',str(compiled),'./cmd/gatehouse',cwd=ROOT,env=env)
         shutil.copyfile(compiled,binary)
         binary.chmod(0o755)
-        depends='adduser, systemd, init-system-helpers' if part=='core' else f'gatehouse-core (= {VERSION}), systemd, init-system-helpers'
+        depends='adduser, systemd, init-system-helpers' if part=='core' else f'gatehouse-core (= {PACKAGE_VERSION}), systemd, init-system-helpers'
         control(stage,name,arch,depends,'SSH access broker '+part+' component')
         docs=stage/'usr/share/doc'/name
         docs.mkdir(parents=True,exist_ok=True)
@@ -125,24 +136,26 @@ fi
             write(stage/'DEBIAN/postinst',service_postinst,0o755)
         if part=='core': 
             shutil.copy(ROOT/'config.example.json',docs/'config.example.json')
-        run('dpkg-deb','--root-owner-group','--threads-max=2','-Zxz','--build',str(stage),str(OUT/f'{name}_{VERSION}_{arch}.deb'))
+        run('dpkg-deb','--root-owner-group','--threads-max=2','-Zxz','--build',str(stage),str(OUT/f'{name}_{PACKAGE_VERSION}_{arch}.deb'))
 meta=ROOT/'build'/'meta'
 shutil.rmtree(meta,ignore_errors=True)
-control(meta,'gatehouse','all',', '.join(f'gatehouse-{p} (= {VERSION})' for p in ['core','ssh','web','cli']),'Complete Gatehouse SSH access broker')
-run('dpkg-deb','--root-owner-group','--threads-max=2','-Zxz','--build',str(meta),str(OUT/f'gatehouse_{VERSION}_all.deb'))
+control(meta,'gatehouse','all',', '.join(f'gatehouse-{p} (= {PACKAGE_VERSION})' for p in ['core','ssh','web','cli']),'Complete Gatehouse SSH access broker')
+run('dpkg-deb','--root-owner-group','--threads-max=2','-Zxz','--build',str(meta),str(OUT/f'gatehouse_{PACKAGE_VERSION}_all.deb'))
 for arch in ['amd64','arm64']:
-    files=sorted(OUT.glob(f'*_{VERSION}_{arch}.deb'))+[OUT/f'gatehouse_{VERSION}_all.deb']
+    files=sorted(OUT.glob(f'*_{PACKAGE_VERSION}_{arch}.deb'))+[OUT/f'gatehouse_{PACKAGE_VERSION}_all.deb']
     manifest=''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in files)
     sha=OUT/f'SHA256SUMS-{arch}';sha.write_text(manifest)
     with tarfile.open(OUT/f'gatehouse-{VERSION}-{arch}.tar.gz','w:gz') as tar:
         for p in files+[sha,ROOT/'README.md',ROOT/'README.en.md',ROOT/'CONTRIBUTING.md',ROOT/'LICENSE',ROOT/'SECURITY.md',ROOT/'DESIGN.md',ROOT/'IMPLEMENTATION.md',ROOT/'TEST-REPORT.md',ROOT/'install.sh',ROOT/'acceptance.sh',ROOT/'CHANGELOG.md',ROOT/'UPGRADE.md',ROOT/'packaging/upgrade_state.py']+([ROOT/'VALIDATION.json'] if (ROOT/'VALIDATION.json').is_file() else []):
             tar.add(p,arcname=p.name)
         tar.add(ROOT/'docs',arcname='docs')
+        tar.add(INFO_PATH,arcname='BUILD-INFO.json')
 with tarfile.open(OUT/f'gatehouse-{VERSION}-source.tar.gz','w:gz') as tar:
+    tar.add(INFO_PATH,arcname='gatehouse/BUILD-INFO.json')
     # Include project sources explicitly. Never archive arbitrary untracked
     # instance files, credentials, environment files or generated artifacts.
-    source_roots=['cmd','internal','packaging','tests','docs','.github']
-    source_files=['README.md','README.en.md','DESIGN.md','IMPLEMENTATION.md','TEST-REPORT.md','UPGRADE.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','LICENSE','THIRD-PARTY-LICENSES.txt','go.mod','go.sum','package.json','package-lock.json','config.example.json','install.sh','acceptance.sh','.gitignore','.gitattributes']
+    source_roots=['cmd','internal','packaging','tests','scripts','docs','.github']
+    source_files=['README.md','README.en.md','DESIGN.md','IMPLEMENTATION.md','TEST-REPORT.md','UPGRADE.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','LICENSE','THIRD-PARTY-LICENSES.txt','go.mod','go.sum','package.json','package-lock.json','mkdocs.yml','requirements-docs.txt','config.example.json','install.sh','acceptance.sh','.gitignore','.gitattributes']
     candidates=[ROOT/name for name in source_files]
     for name in source_roots:candidates.extend((ROOT/name).rglob('*'))
     if (ROOT/'.git').exists():
@@ -156,5 +169,6 @@ with tarfile.open(OUT/f'gatehouse-{VERSION}-source.tar.gz','w:gz') as tar:
         if len(rel.parts)>1 and rel.parts[0] not in source_roots:continue
         if len(rel.parts)>1 and p.suffix not in allowed_suffixes:continue
         tar.add(p,arcname='gatehouse/'+str(rel))
+shutil.copyfile(INFO_PATH,OUT/'BUILD-INFO.json')
 (OUT/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(OUT.iterdir()) if p.name!='SHA256SUMS'))
 print('Artifacts:',OUT)

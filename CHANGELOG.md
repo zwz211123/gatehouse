@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Inject release versions and source commits at build time; use explicit development identities for ordinary CI and local builds.
+- Derive Debian versions, installer package selection, source archive metadata and documentation from one build identity, with prerelease ordering and publish-time cross-checks.
+
 - Add fish-style fuzzy Tab candidates with descriptions and cycling, plus `clear`.
 - Generate shortcuts for every requested purpose and select output through numeric menus.
 - Review credentials with `proxy list` / `proxy show`; store new temporary passwords directly while accepting legacy hashes.

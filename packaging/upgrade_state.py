@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Offline 0.2.x identity migration: snapshot and verify, never rewrite records.
+"""Offline schema-1 identity migration: snapshot and verify, never rewrite records.
 
 The snapshot contains master/private keys and is intentionally root-only. It is
 independent of the user-facing encrypted backup format and includes WAL files.
 """
-import contextlib,fcntl,hashlib,json,os,pathlib,sqlite3,sys,tarfile,urllib.parse
+import subprocess,contextlib,fcntl,hashlib,json,os,pathlib,sqlite3,sys,tarfile,urllib.parse
 
 def require(condition,message):
     if not condition:raise ValueError(message)
@@ -86,7 +86,14 @@ def main():
                         roots.append(path)
                         tar.add(path,arcname=str(path).lstrip('/'))
                 f.flush();os.fsync(f.fileno())
-            manifest={'format':'gatehouse-upgrade-v1','from':'0.2.x','to':'0.2.1','state':current,'archive_sha256':digest(archive)}
+            try:
+                previous=subprocess.check_output(['/usr/bin/ghbctl','version'],text=True,timeout=5).strip()
+            except (OSError,subprocess.SubprocessError):
+                previous='unknown'
+            base=pathlib.Path(__file__).resolve().parent
+            identity=next((p for p in [base/'BUILD-INFO.json',base.parent/'build/version.json'] if p.is_file()),None)
+            target=json.loads(identity.read_text())['version'] if identity else 'unknown'
+            manifest={'format':'gatehouse-upgrade-v1','from':previous,'to':target,'state':current,'archive_sha256':digest(archive)}
             with (backup/'manifest.json').open('x') as f:
                 os.fchmod(f.fileno(),0o600);json.dump(manifest,f,ensure_ascii=False,indent=2);f.flush();os.fsync(f.fileno())
             # Ensure the stopped source did not change while it was copied.

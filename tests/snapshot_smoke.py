@@ -2,6 +2,9 @@
 """Verify offline snapshot/restore and identity retention on a schema-1 fixture."""
 import contextlib,json,pathlib,sqlite3,subprocess,tempfile,tarfile,os
 ROOT=pathlib.Path(__file__).resolve().parent.parent
+INFO=json.loads((ROOT/'build/version.json').read_text())
+VERSION=INFO['version']
+PACKAGE_VERSION=INFO['package_version']
 BIN=ROOT/'build/amd64/gatehouse-cli/usr/bin/ghbctl'
 def run(*args,ok=True):
  p=subprocess.run([str(x) for x in args],capture_output=True,text=True,timeout=30)
@@ -9,7 +12,7 @@ def run(*args,ok=True):
  return p
 with tempfile.TemporaryDirectory(prefix='ghb-upgrade-') as td:
  t=pathlib.Path(td);(t/'config').mkdir();cfg=t/'config/config.json';data=t/'data';backup=t/'backup'
- old=BIN;assert run(old,'version').stdout.strip()=='0.2.1'
+ old=BIN;assert run(old,'version').stdout.strip()==VERSION
  run('ssh-keygen','-q','-t','ed25519','-N','','-f',t/'owner')
  run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost','-keyout',t/'key.pem','-out',t/'cert.pem')
  run(old,'init','--config',cfg,'--data',data,'--run',t/'run','--user','admin','--public-key',t/'owner.pub','--public-host','localhost','--web-url','https://localhost:8443','--tls-cert',t/'cert.pem','--tls-key',t/'key.pem')
@@ -53,4 +56,4 @@ with tempfile.TemporaryDirectory(prefix='ghb-upgrade-') as td:
  run('python3',script,'verify',cfg,backup)
  with contextlib.closing(sqlite3.connect(data/'gatehouse.db')) as db, db:db.execute('INSERT INTO schema_migrations VALUES(2)')
  assert run(BIN,'upgrade-check','--config',cfg,ok=False).returncode,'future schema accepted'
- print(json.dumps({'fixture_version':'0.2.1','new_version':run(BIN,'version').stdout.strip(),'schema_1_fixture_initialization':'passed','offline_compatibility':'passed','complete_root_only_snapshot':'passed','exact_records_revisions_audit_identity_config_tls':'passed','mutation_detection':'passed','snapshot_restore':'passed','future_schema_rejected':'passed','real_dpkg_systemd_upgrade':'not part of this snapshot test'},ensure_ascii=False))
+ print(json.dumps({'fixture_version':VERSION,'new_version':run(BIN,'version').stdout.strip(),'schema_1_fixture_initialization':'passed','offline_compatibility':'passed','complete_root_only_snapshot':'passed','exact_records_revisions_audit_identity_config_tls':'passed','mutation_detection':'passed','snapshot_restore':'passed','future_schema_rejected':'passed','real_dpkg_systemd_upgrade':'not part of this snapshot test'},ensure_ascii=False))
