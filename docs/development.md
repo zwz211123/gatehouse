@@ -86,6 +86,15 @@ sudo env GHB_LEGACY_CLI_DEB=/absolute/path/gatehouse-cli_0.2.0_amd64.deb \
 
 ## CI 与发布
 
-常规 CI 在提交和 PR 上执行源码检查、Go/DOM 测试、双架构构建、包检查和可运行的进程冒烟，并上传构建产物。工作流采用固定上游 action commit 和最小只读权限，不能把“配置了工作流”当作已通过的远程结果。
+常规 CI 在 main 分支推送、PR 和手动执行时运行源码检查、Go/DOM 测试、双架构构建、包检查和可运行的进程冒烟，并上传构建产物（保留 14 天）。推送和 PR 若仅修改 Markdown、文档目录、文档构建配置或 Issue/PR 模板，则跳过代码 CI；手动执行始终运行全部检查。一次推送触发一次工作流，不逐个构建其中的 commit。文档仍由独立的 Documentation 工作流检查和部署。工作流采用固定上游 action commit 和最小只读权限，不能把“配置了工作流”当作已通过的远程结果。
 
 版本发布前应审阅 CHANGELOG、确认源码版本与安装脚本/包版本一致，完成所需 Debian 目标机验收，再将经过验证的安装包作为 Release 资产上传。不要上传实例数据库、升级快照或含私人部署信息的旧 bundle。开发构建产物不等同于稳定 Release。
+
+### 手动发布 Release
+
+1. 在准备发布的源码中更新版本，确保 `internal/gh/config.go` 与 `packaging/build.py` 一致，并审阅安装/升级脚本与 CHANGELOG。
+2. 将变更合并到 main，进入 GitHub **Actions → Release → Run workflow**，分支选择 **main**。
+3. 填写与源码一致的标签，例如 `v0.2.1`；按需勾选预发布。
+4. 工作流检查版本和标签，然后复用完整 CI。全部成功后验证 SHA-256，创建指向本次执行提交的标签和 Release，并上传所有 Debian 包、双架构 bundle、源码归档与校验清单。
+
+Release 仅接受人工手动触发，不因 push、PR 或 tag 自动发布；只能从 main 执行。已有标签会被拒绝，不覆盖已发布版本。发布运行使用只读权限构建，仅发布任务具有仓库内容写权限。该流程发布下载附件，不升级任何已部署服务器。CI 附件解压后按版本目录组织，例如 `0.2.1/`。
