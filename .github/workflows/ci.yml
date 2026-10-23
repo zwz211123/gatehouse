@@ -23,6 +23,12 @@ on:
       - '.github/pull_request_template.md'
   workflow_dispatch:
   workflow_call:
+    inputs:
+      version:
+        description: Release version; empty means a development build
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -59,8 +65,13 @@ jobs:
       - name: Check shell and Python syntax
         run: |
           bash -n install.sh acceptance.sh
-          python3 -m py_compile packaging/*.py tests/*.py
+          python3 -m py_compile packaging/*.py tests/*.py scripts/*.py
+          python3 packaging/test_versioning.py
+          python3 scripts/test_docs.py
   packages:
+    env:
+      GATEHOUSE_VERSION: ${{ inputs.version }}
+      GATEHOUSE_COMMIT: ${{ github.sha }}
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30

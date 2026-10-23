@@ -2,6 +2,9 @@
 """Exercise real split processes, Unix peer credentials, OpenSSH, HTTPS and Web CRUD."""
 import http.cookiejar,json,os,pathlib,pwd,queue,socket,ssl,subprocess,tempfile,threading,time,urllib.error,urllib.request
 ROOT=pathlib.Path(__file__).resolve().parent.parent
+INFO=json.loads((ROOT/'build/version.json').read_text())
+VERSION=INFO['version']
+PACKAGE_VERSION=INFO['package_version']
 BIN=pathlib.Path(os.environ.get('GHB_SMOKE_BIN',str(ROOT/'build/process')))
 def port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
@@ -19,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='gatehouse-process-') as td:
         for _ in range(100):
             try:
                 status=json.loads(run(str(BIN/'ghbctl'),'status','--config',str(config)))
-                if status['version']=='0.2.1':break
+                if status['version']==VERSION:break
             except Exception:pass
             time.sleep(.05)
         else:raise AssertionError('core did not start')

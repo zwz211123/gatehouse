@@ -9,7 +9,7 @@ on:
       - 'requirements-docs.txt'
       - 'scripts/*docs*.py'
       - '.github/workflows/docs.yml'
-      - 'internal/gh/config.go'
+      - 'packaging/versioning.py'
   pull_request:
     paths:
       - 'docs/**'
@@ -18,7 +18,7 @@ on:
       - 'requirements-docs.txt'
       - 'scripts/*docs*.py'
       - '.github/workflows/docs.yml'
-      - 'internal/gh/config.go'
+      - 'packaging/versioning.py'
   workflow_dispatch:
   workflow_call:
     inputs:

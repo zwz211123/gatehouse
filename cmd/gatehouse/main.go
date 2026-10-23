@@ -32,6 +32,12 @@ func run() error {
 		cmd = args[0]
 		args = args[1:]
 		if cmd == "version" {
+			if len(args) == 1 && args[0] == "--json" {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{"version": gh.Version, "commit": gh.Commit})
+			}
+			if len(args) != 0 {
+				return fmt.Errorf("usage: version [--json]")
+			}
 			fmt.Println(gh.Version)
 			return nil
 		}

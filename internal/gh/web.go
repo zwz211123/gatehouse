@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,7 +25,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	if r.Method == "GET" && r.URL.Path == "/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		io.WriteString(w, indexHTML)
+		io.WriteString(w, strings.ReplaceAll(indexHTML, "{{GATEHOUSE_VERSION}}", html.EscapeString(Version)))
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/app.js" {

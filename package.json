@@ -1,6 +1,5 @@
 {
   "name": "gatehouse-web-tests",
-  "version": "0.2.1",
   "private": true,
   "license": "MIT",
   "scripts": { "test": "node tests/ui.cjs", "test:web": "node tests/ui.cjs" },

@@ -6,9 +6,12 @@ import os
 import posixpath
 import re
 import shutil
+import sys
 from urllib.parse import urlsplit, urlunsplit
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'packaging'))
+from versioning import resolve, release_version
 OUTPUT = ROOT / 'build' / 'docs-source'
 REPO = 'https://github.com/zwz211123/gatehouse/blob/main/'
 ROOT_PAGES = {
@@ -23,27 +26,28 @@ ROOT_PAGES = {
 
 
 def metadata():
-    """Use Release CI's validated version, or the checked-out source locally."""
-    source = (ROOT / 'internal/gh/config.go').read_text(encoding='utf-8')
-    match = re.search(r'^const Version = "([^"]+)"', source, re.MULTILINE)
-    if not match:
-        raise ValueError('Cannot read the source version')
-    source_version = match.group(1)
-    version = os.environ.get('DOCS_VERSION') or source_version
-    pattern = r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?'
-    if not re.fullmatch(pattern, version) or version != source_version:
-        raise ValueError('Documentation version must match the checked-out source')
+    """Consume the build identity supplied by Release CI, with a dev fallback."""
+    supplied = os.environ.get('DOCS_VERSION') or None
+    info = resolve(ROOT, version=supplied)
+    version = info['version']
     channel = os.environ.get('DOCS_CHANNEL') or 'development'
     if channel not in ('development', 'release', 'prerelease'):
         raise ValueError('Unknown documentation channel')
+    if channel != 'development' and (not supplied or info['channel'] != channel):
+        raise ValueError('Published documentation needs an explicit matching release channel')
     stable_version = ''
     release_path = ROOT / 'build/latest-release.json'
     if release_path.exists():
         release = json.loads(release_path.read_text(encoding='utf-8'))
         candidate = release.get('tag_name', '').removeprefix('v')
         assets = {a.get('name') for a in release.get('assets', [])}
+        try:
+            release_version(candidate)
+            valid = '-' not in candidate
+        except ValueError:
+            valid = False
         if (not release.get('draft') and not release.get('prerelease')
-                and re.fullmatch(pattern, candidate)
+                and valid
                 and f'gatehouse-{candidate}-amd64.tar.gz' in assets):
             stable_version = candidate
     download_version = version if channel == 'release' else (stable_version or version)
