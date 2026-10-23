@@ -818,7 +818,9 @@ func TestOrdinaryMenuReturnsAfterTargetExit(t *testing.T) {
 		}
 	}
 	wait("受控跳板终端")
-	in.Write([]byte("connect acct\n"))
+	in.Write([]byte("connect acct 9223372036854775808\n"))
+	wait("连接时限无效")
+	in.Write([]byte("connect acct 9223372036854775807\n"))
 	wait("TARGET-SHELL")
 	in.Write([]byte("hello"))
 	wait("已返回跳板机")

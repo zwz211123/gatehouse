@@ -18,7 +18,7 @@ func (s *Store) Subject(g Grant, user string) bool {
 	return false
 }
 func (s *Store) GrantValid(g Grant, seen map[string]bool) bool {
-	if seen[g.ID] || !g.Enabled || (g.Expires > 0 && g.Expires <= now() || g.NotBefore > now()) {
+	if g.Limits.MaxDuration < 0 || g.Limits.MaxTTL < 0 || seen[g.ID] || !g.Enabled || (g.Expires > 0 && g.Expires <= now() || g.NotBefore > now()) {
 		return false
 	}
 	seen[g.ID] = true
@@ -77,9 +77,12 @@ func (s *Store) allowed(user, action, resource, source string, checkSource bool)
 	return found, found != ""
 }
 func limitsSubset(a, b Limits) bool {
-	return bounded(a.MaxDuration, b.MaxDuration) && bounded(a.MaxTTL, b.MaxTTL) && bounded(a.MaxTotal, b.MaxTotal) && bounded(a.MaxConcurrent, b.MaxConcurrent) && bounded(a.MaxSessions, b.MaxSessions) && bounded(a.MaxChannels, b.MaxChannels) && (b.MaxBytes == 0 || (a.MaxBytes > 0 && a.MaxBytes <= b.MaxBytes)) && (b.MaxRate == 0 || (a.MaxRate > 0 && a.MaxRate <= b.MaxRate))
+	return timeBounded(a.MaxDuration, b.MaxDuration) && timeBounded(a.MaxTTL, b.MaxTTL) && bounded(a.MaxTotal, b.MaxTotal) && bounded(a.MaxConcurrent, b.MaxConcurrent) && bounded(a.MaxSessions, b.MaxSessions) && bounded(a.MaxChannels, b.MaxChannels) && (b.MaxBytes == 0 || (a.MaxBytes > 0 && a.MaxBytes <= b.MaxBytes)) && (b.MaxRate == 0 || (a.MaxRate > 0 && a.MaxRate <= b.MaxRate))
 }
-func bounded(a, b int) bool { return a > 0 && (b == 0 || a <= b) }
+
+// Zero means no additional time limit, so a finite parent cannot delegate zero.
+func timeBounded(a, b int) bool { return a >= 0 && b >= 0 && (b == 0 || (a > 0 && a <= b)) }
+func bounded(a, b int) bool     { return a > 0 && (b == 0 || a <= b) }
 func cidrsSubset(a, b []string) bool {
 	if len(b) == 0 {
 		return true
@@ -169,7 +172,7 @@ func (s *Store) ValidateGrant(actor string, g Grant) error {
 		}
 		id = p.Parent
 	}
-	if g.Depth < 0 || g.Depth > 8 || len(g.Actions) == 0 || len(g.Resources) == 0 || (g.Subject == "") == (g.Group == "") {
+	if g.Limits.MaxDuration < 0 || g.Limits.MaxTTL < 0 || g.Depth < 0 || g.Depth > 8 || len(g.Actions) == 0 || len(g.Resources) == 0 || (g.Subject == "") == (g.Group == "") {
 		return fmt.Errorf("invalid grant")
 	}
 	if g.Expires != 0 && g.Expires <= now() {

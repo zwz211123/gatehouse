@@ -408,7 +408,7 @@ type cancelReader struct {
 
 func (x cancelReader) Read(b []byte) (int, error) { return x.h.read(x.ctx, b) }
 func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int) {
-	if duration < 10 || duration > 86400 {
+	if duration < 10 {
 		io.WriteString(ch, "连接时限无效\r\n")
 		return
 	}
@@ -431,8 +431,7 @@ func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int)
 	defer unbind()
 	setupTimeout := time.AfterFunc(30*time.Second, func() { client.Close() })
 	defer setupTimeout.Stop()
-	expiry := time.AfterFunc(time.Duration(duration)*time.Second, func() { client.Close() })
-	defer expiry.Stop()
+	started := now()
 	s, e := client.NewSession()
 	if e != nil {
 		return
@@ -481,7 +480,7 @@ func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int)
 			case <-ticker.C:
 				_, auth := c.Store.AuthorizeSpec(l.User, "shell.direct", account, spec, l.Source)
 				a, b, k, err := c.ownerAccount(l.User, account)
-				if auth != nil || err != nil || a.Version != originalAccount.Version || b.Version != originalAsset.Version || k.Version != originalCredential.Version || c.auditFailed.Load() {
+				if secondsElapsed(started, duration, now()) || auth != nil || err != nil || a.Version != originalAccount.Version || b.Version != originalAsset.Version || k.Version != originalCredential.Version || c.auditFailed.Load() {
 					client.Close()
 					return
 				}

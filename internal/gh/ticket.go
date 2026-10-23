@@ -64,8 +64,13 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	if s.PTY == "" {
 		s.PTY = "forbid"
 	}
-	if s.TTL < 15 || s.TTL > 600 || s.Duration < 10 || s.Duration > 86400 || s.Total < 1 || s.Total > 100 || s.Concurrent < 1 || s.Concurrent > s.Total || s.Sessions < 1 || s.Sessions > 16 || s.Channels < 1 || s.Channels > 128 || s.MaxBytes < 0 || s.MaxRate < 0 {
+	if s.TTL < 15 || s.Duration < 10 || s.Total < 1 || s.Total > 100 || s.Concurrent < 1 || s.Concurrent > s.Total || s.Sessions < 1 || s.Sessions > 16 || s.Channels < 1 || s.Channels > 128 || s.MaxBytes < 0 || s.MaxRate < 0 {
 		return t, "", "", fmt.Errorf("limits out of range")
+	}
+	created := now()
+	expires, ok := secondsDeadline(created, s.TTL)
+	if !ok {
+		return t, "", "", fmt.Errorf("TTL overflows expiry timestamp")
 	}
 	if !contains([]string{"allow", "require", "forbid"}, s.PTY) {
 		return t, "", "", fmt.Errorf("invalid PTY policy")
@@ -150,8 +155,8 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	// a delegated proxy.exec/tcp grant only matches an immutable account-specific profile.
 	// Additional purpose resources are required for both owner-created and delegated requests.
 	if contains(s.Modes, "exec") {
-		id, ok := c.Store.AllowedFrom(l.User, "proxy.exec", s.Account+":exec:"+hash(s.Command), l.Source)
-		if !ok {
+		id, err := c.Store.AuthorizeSpec(l.User, "proxy.exec", s.Account+":exec:"+hash(s.Command), s, l.Source)
+		if err != nil {
 			return t, "", "", fmt.Errorf("exact command profile not authorized")
 		}
 		if !contains(ids, id) {
@@ -159,8 +164,8 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 		}
 	}
 	if contains(s.Modes, "tcp") {
-		id, ok := c.Store.AllowedFrom(l.User, "proxy.tcp", tcpResource(s), l.Source)
-		if !ok {
+		id, err := c.Store.AuthorizeSpec(l.User, "proxy.tcp", tcpResource(s), s, l.Source)
+		if err != nil {
 			return t, "", "", fmt.Errorf("fixed TCP endpoint not authorized")
 		}
 		if !contains(ids, id) {
@@ -182,7 +187,7 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	if count >= global.MaxOutstanding {
 		return t, "", "", fmt.Errorf("too many outstanding requests")
 	}
-	t = Ticket{ID: newID(), Username: "ghp_" + strings.ToLower(newID()), Owner: l.User, Source: l.ID, SourceKey: l.Key, Spec: s, Created: now(), Expires: now() + int64(s.TTL), State: "issued", AssetVersion: b.Version, AccountVersion: a.Version, CredentialVersion: k.Version, GrantIDs: ids}
+	t = Ticket{ID: newID(), Username: "ghp_" + strings.ToLower(newID()), Owner: l.User, Source: l.ID, SourceKey: l.Key, Spec: s, Created: created, Expires: expires, State: "issued", AssetVersion: b.Version, AccountVersion: a.Version, CredentialVersion: k.Version, GrantIDs: ids}
 	pw := random(32)
 	if e = c.Audit(l.User, "proxy.issue", t.ID, "ok", l.Source, encode(map[string]any{"modes": s.Modes, "account": s.Account, "command_hash": hash(s.Command)})); e != nil {
 		return Ticket{}, "", "", e
@@ -242,12 +247,12 @@ func (c *Core) ticketValid(t Ticket, source string) error {
 		}
 	}
 	if contains(t.Spec.Modes, "exec") {
-		if _, ok := c.Store.AllowedFrom(t.Owner, "proxy.exec", t.Spec.Account+":exec:"+hash(t.Spec.Command), source); !ok {
+		if _, err := c.Store.AuthorizeSpec(t.Owner, "proxy.exec", t.Spec.Account+":exec:"+hash(t.Spec.Command), t.Spec, source); err != nil {
 			return ErrDenied
 		}
 	}
 	if contains(t.Spec.Modes, "tcp") {
-		if _, ok := c.Store.AllowedFrom(t.Owner, "proxy.tcp", tcpResource(t.Spec), source); !ok {
+		if _, err := c.Store.AuthorizeSpec(t.Owner, "proxy.tcp", tcpResource(t.Spec), t.Spec, source); err != nil {
 			return ErrDenied
 		}
 	}
