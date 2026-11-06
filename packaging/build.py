@@ -158,7 +158,7 @@ with tarfile.open(OUT/f'gatehouse-{VERSION}-source.tar.gz','w:gz') as tar:
     tar.add(INFO_PATH,arcname='gatehouse/BUILD-INFO.json')
     # Include project sources explicitly. Never archive arbitrary untracked
     # instance files, credentials, environment files or generated artifacts.
-    source_roots=['cmd','internal','packaging','tests','scripts','docs','.github']
+    source_roots=['cmd','internal','packaging','tests','scripts','docs','.github','web']
     source_files=['README.md','README.en.md','DESIGN.md','IMPLEMENTATION.md','TEST-REPORT.md','UPGRADE.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','LICENSE','THIRD-PARTY-LICENSES.txt','go.mod','go.sum','package.json','package-lock.json','mkdocs.yml','requirements-docs.txt','config.example.json','install.sh','acceptance.sh','.gitignore','.gitattributes']
     candidates=[ROOT/name for name in source_files]
     for name in source_roots:candidates.extend((ROOT/name).rglob('*'))

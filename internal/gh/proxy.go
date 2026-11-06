@@ -13,6 +13,9 @@ import (
 )
 
 func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.Request) {
+	channelID := newID()
+	closeResult := "aborted"
+	defer func() { c.auditConnection(l, "proxy.close", t.ID, closeResult, "", channelID) }()
 	var client *ssh.Client
 	var remote ssh.Channel
 	var unbind func()
@@ -101,7 +104,8 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 				return
 			}
 			if start {
-				if e := c.Audit(l.User, "proxy.start", t.ID, "ok", l.Source, r.Type); e != nil {
+				closeResult = "error"
+				if e := c.auditConnection(l, "proxy.start", t.ID, "attempt", r.Type, channelID); e != nil {
 					return
 				}
 				var e error
@@ -123,6 +127,7 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 				}
 				c.mu.Unlock()
 				if sftpMode {
+					closeResult = "ok"
 					if hasPTY {
 						if r.WantReply {
 							r.Reply(false, nil)
@@ -133,7 +138,7 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 					if r.WantReply {
 						r.Reply(true, nil)
 					}
-					go func() { c.serveSFTP(l, t, ch, client, func() { timer.Stop() }); finish() }()
+					go func() { c.serveSFTP(l, t, ch, client, func() { timer.Stop() }, channelID); finish() }()
 					continue
 				}
 				var rr <-chan *ssh.Request
@@ -157,12 +162,24 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 				if e != nil || !yes {
 					return
 				}
+				closeResult = "ok"
 				timer.Stop()
 				requestsDone := make(chan struct{})
 				go func() {
 					defer close(requestsDone)
 					for req := range rr {
 						if req.Type == "exit-status" || req.Type == "exit-signal" {
+							result, detail := "error", ""
+							if req.Type == "exit-status" {
+								var status struct{ Code uint32 }
+								if ssh.Unmarshal(req.Payload, &status) == nil {
+									detail = fmt.Sprint(status.Code)
+									if status.Code == 0 {
+										result = "ok"
+									}
+								}
+							}
+							c.auditConnection(l, "proxy.exit", t.ID, result, detail, channelID)
 							ch.SendRequest(req.Type, false, req.Payload)
 						}
 						if req.WantReply {
@@ -255,6 +272,9 @@ func (c *Core) copyLimited(l *Live, t Ticket, dst io.Writer, src io.Reader) {
 	io.Copy(quotaWriter{c, l, t, dst}, src)
 }
 func (c *Core) tcpChannel(l *Live, t Ticket, n ssh.NewChannel) {
+	channelID := newID()
+	closeResult := "error"
+	defer func() { c.auditConnection(l, "proxy.tcp.close", t.ID, closeResult, "", channelID) }()
 	var d struct {
 		Host       string
 		Port       uint32
@@ -266,7 +286,7 @@ func (c *Core) tcpChannel(l *Live, t Ticket, n ssh.NewChannel) {
 		c.FailTicket(l, "TCP endpoint mismatch")
 		return
 	}
-	if c.Audit(l.User, "proxy.tcp", t.ID, "ok", l.Source, net.JoinHostPort(d.Host, fmt.Sprint(d.Port))) != nil {
+	if c.auditConnection(l, "proxy.tcp", t.ID, "attempt", net.JoinHostPort(d.Host, fmt.Sprint(d.Port)), channelID) != nil {
 		n.Reject(ssh.Prohibited, "audit unavailable")
 		return
 	}
@@ -299,6 +319,7 @@ func (c *Core) tcpChannel(l *Live, t Ticket, n ssh.NewChannel) {
 		return
 	}
 	defer ch.Close()
+	closeResult = "ok"
 	l.Started.Store(true)
 	go func() {
 		ssh.DiscardRequests(r)
@@ -408,6 +429,7 @@ type cancelReader struct {
 
 func (x cancelReader) Read(b []byte) (int, error) { return x.h.read(x.ctx, b) }
 func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int) {
+	channelID := newID()
 	if duration < 10 {
 		io.WriteString(ch, "连接时限无效\r\n")
 		return
@@ -459,7 +481,9 @@ func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int)
 	if e != nil {
 		return
 	}
-	if c.Audit(l.User, "direct.start", account, "ok", l.Source, "") != nil {
+	event := c.connectionEvent(l, "direct.start", account, "ok", "", channelID)
+	event.Account = account
+	if c.AuditEvent(event) != nil {
 		return
 	}
 	if e = s.Shell(); e != nil {
@@ -489,10 +513,16 @@ func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int)
 	}()
 	done := make(chan struct{})
 	go func() { io.Copy(in, src); in.Close(); close(done) }()
-	s.Wait()
+	exitErr := s.Wait()
 	cancel()
 	<-done
 	close(watch)
-	c.Audit(l.User, "direct.close", account, "ok", l.Source, "")
+	result := "ok"
+	if exitErr != nil {
+		result = "error"
+	}
+	event = c.connectionEvent(l, "direct.close", account, result, "", channelID)
+	event.Account = account
+	c.AuditEvent(event)
 	io.WriteString(ch, "\r\n已返回跳板机\r\n")
 }

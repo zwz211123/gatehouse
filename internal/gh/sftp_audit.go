@@ -44,8 +44,13 @@ type sftpAuditStream struct {
 	closed  bool
 }
 
-func newSFTPAuditStream(rwc io.ReadWriteCloser, p *fileProxy) *sftpAuditStream {
-	return &sftpAuditStream{ReadWriteCloser: rwc, p: p, id: newID(), pending: map[uint32]sftpOperation{}, handles: map[string]string{}}
+func newSFTPAuditStream(rwc io.ReadWriteCloser, p *fileProxy, channelIDs ...string) *sftpAuditStream {
+	id := newID()
+	if len(channelIDs) > 0 && channelIDs[0] != "" {
+		id = channelIDs[0]
+	}
+	p.channelID = id
+	return &sftpAuditStream{ReadWriteCloser: rwc, p: p, id: id, pending: map[uint32]sftpOperation{}, handles: map[string]string{}}
 }
 
 func (s *sftpAuditStream) record(op sftpOperation, result string) error {
@@ -53,7 +58,7 @@ func (s *sftpAuditStream) record(op sftpOperation, result string) error {
 		return ErrDenied
 	}
 	op.Session = s.id
-	return s.p.c.Audit(s.p.l.User, "file."+strings.ToLower(op.Method), s.p.t.ID, result, s.p.l.Source, encode(op))
+	return s.p.c.auditConnection(s.p.l, "file."+strings.ToLower(op.Method), s.p.t.ID, result, encode(op), s.id)
 }
 
 func (s *sftpAuditStream) Read(b []byte) (int, error) {
@@ -209,7 +214,7 @@ func (s *sftpAuditStream) request(packet []byte) ([]byte, error) {
 	if err := s.record(op, "attempt"); err != nil {
 		return nil, err
 	}
-	if err := s.p.c.ticketValid(s.p.t, s.p.l.Source); err != nil {
+	if err := s.p.c.activeTicketValid(s.p.t, s.p.l.Source); err != nil {
 		if auditErr := s.record(op, "denied"); auditErr != nil {
 			return nil, auditErr
 		}

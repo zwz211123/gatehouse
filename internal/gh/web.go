@@ -113,7 +113,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		c.web[hash(id)] = &WebSession{SourceAddr: source, User: token.User, Source: token.Source, Key: token.Key, Created: now(), Last: now(), Snapshot: snapshot, Fresh: map[string]int64{}}
+		c.web[hash(id)] = &WebSession{ID: newID(), SourceAddr: source, User: token.User, Source: token.Source, Key: token.Key, Created: now(), Last: now(), Snapshot: snapshot, Fresh: map[string]int64{}}
 		c.mu.Unlock()
 		http.SetCookie(w, &http.Cookie{Name: "__Host-ghb-session", Value: id, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 7200})
 		jsonOut(w, 200, map[string]bool{"ok": true})
@@ -125,6 +125,12 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/audit/records":
+		if r.Method != "GET" {
+			break
+		}
+		c.auditRecordsHTTP(w, r, session)
+		return
 	case "/api/settings":
 		if r.Method != "GET" || !c.webAllowed(session, "config.read", "*") {
 			jsonOut(w, 403, map[string]string{"error": "permission denied"})
@@ -150,7 +156,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		var u User
 		c.Store.Get("user", session.User, &u)
-		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities})
+		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities, "permissions": session.Snapshot})
 		return
 	case "/api/records":
 		if r.Method != "GET" {
@@ -218,10 +224,15 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			break
 		}
-		es, _ := c.Store.Events(1000)
+		es, err := c.visibleAuditEvents(session, true)
+		if err != nil {
+			jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
+			return
+		}
+		selected := r.URL.Query()["record"]
 		out := []Event{}
 		for _, e := range es {
-			if c.webAllowed(session, "audit.read", e.Resource) && c.webAllowed(session, "audit.export", e.Resource) {
+			if len(selected) == 0 || contains(selected, auditRecordKey(e)) {
 				out = append(out, e)
 			}
 		}
@@ -263,10 +274,16 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.management.Lock()
+		session.OperationID = newID()
 		v, e := c.Change(session, q, source)
 		c.management.Unlock()
 		c.Revalidate()
 		if e != nil {
+			result := "error"
+			if e == ErrDenied {
+				result = "denied"
+			}
+			c.auditWeb(session, q.Kind+"."+q.Operation, q.ID, result, "", source)
 			jsonOut(w, 403, map[string]string{"error": e.Error()})
 			return
 		}

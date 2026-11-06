@@ -46,6 +46,7 @@ type WebToken struct {
 	Grants            []string
 }
 type WebSession struct {
+	ID, OperationID   string
 	User, Source, Key string
 	SourceAddr        string
 	Created, Last     int64
@@ -122,12 +123,9 @@ func NewCore(c Config) (*Core, error) {
 	return x, nil
 }
 func (c *Core) Audit(actor, action, res, result, source, detail string) error {
-	e := c.Store.Audit(Event{Actor: actor, Action: action, Resource: res, Result: result, Source: source, Detail: detail})
-	if e != nil {
-		c.auditFailed.Store(true)
-	}
-	return e
+	return c.AuditEvent(Event{Actor: actor, Action: action, Resource: res, Result: result, Source: source, Detail: detail})
 }
+
 func hash(s string) string       { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
 func equalHash(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 func (c *Core) Rate(key string, max int) bool {
@@ -187,7 +185,7 @@ func (c *Core) Revalidate() {
 		}
 		if valid && l.Ticket != "" {
 			var x Ticket
-			valid = c.Store.Get("ticket", l.Ticket, &x) == nil && c.ticketValid(x, l.Source) == nil && !secondsElapsed(l.Created, x.Spec.Duration, now())
+			valid = c.Store.Get("ticket", l.Ticket, &x) == nil && c.activeTicketValid(x, l.Source) == nil && !secondsElapsed(l.Created, x.Spec.Duration, now())
 			if !l.Started.Load() && l.Created+30 < now() {
 				valid = false
 			}
@@ -260,7 +258,7 @@ func (c *Core) IssueWeb(l *Live) (string, error) {
 			delete(c.tokens, h)
 		}
 	}
-	if e := c.Audit(l.User, "web.issue", l.ID, "ok", l.Source, ""); e != nil {
+	if e := c.AuditEvent(Event{Actor: l.User, Action: "web.issue", Resource: l.ID, Result: "ok", Source: l.Source, Category: "auth", ConnectionID: l.ID, Origin: "ssh"}); e != nil {
 		return "", e
 	}
 	c.tokens[hash(token)] = WebToken{User: l.User, Source: l.ID, Key: l.Key, Purpose: "login", Expires: now() + 120}
@@ -306,5 +304,5 @@ func (c *Core) drop(l *Live) {
 		}
 	}
 	c.mu.Unlock()
-	c.Audit(l.User, "connection.close", l.ID, "ok", l.Source, "")
+	c.auditConnection(l, "connection.close", l.ID, "ok", "", "")
 }

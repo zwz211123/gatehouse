@@ -518,7 +518,7 @@ func TestGeneratedCommandsWithOpenSSH(t *testing.T) {
 	}
 }
 
-func TestRevocationClosesActiveShell(t *testing.T) {
+func TestRevocationPreservesActiveShellAndBlocksNewConnections(t *testing.T) {
 	f := setup(t)
 	ticket, pw := f.ticket(t, Spec{Modes: []string{"shell"}})
 	client, e := f.dial(ticket, pw)
@@ -531,6 +531,10 @@ func TestRevocationClosesActiveShell(t *testing.T) {
 		t.Fatal(e)
 	}
 	out, _ := s.StdoutPipe()
+	in, err := s.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if e = s.Shell(); e != nil {
 		t.Fatal(e)
 	}
@@ -541,13 +545,21 @@ func TestRevocationClosesActiveShell(t *testing.T) {
 	if e = f.c.Revoke(f.l.User, ticket.ID, f.l.Source); e != nil {
 		t.Fatal(e)
 	}
-	done := make(chan error, 1)
-	go func() { done <- s.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("revoked session remained active")
+	if another, err := f.dial(ticket, pw); err == nil {
+		another.Close()
+		t.Fatal("revoked entry accepted a new connection")
 	}
+	if _, err = in.Write([]byte("alive")); err != nil {
+		t.Fatal("active shell closed by entry revocation", err)
+	}
+	echoed := make([]byte, 5)
+	if _, err = io.ReadFull(out, echoed); err != nil || string(echoed) != "alive" {
+		t.Fatalf("existing shell did not survive: %q %v", echoed, err)
+	}
+	if err = s.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
 }
 func TestTCPDestinationCannotChange(t *testing.T) {
 	f := setup(t)

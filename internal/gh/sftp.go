@@ -13,21 +13,22 @@ import (
 )
 
 type fileProxy struct {
-	c      *Core
-	l      *Live
-	t      Ticket
-	remote *sftp.Client
+	c         *Core
+	l         *Live
+	t         Ticket
+	remote    *sftp.Client
+	channelID string
 }
 
-func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, ready func()) {
+func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, ready func(), channelID ...string) {
 	remote, e := sftp.NewClient(target)
 	if e != nil {
 		return
 	}
 	defer remote.Close()
 	ready()
-	p := &fileProxy{c, l, t, remote}
-	stream := newSFTPAuditStream(ch, p)
+	p := &fileProxy{c: c, l: l, t: t, remote: remote}
+	stream := newSFTPAuditStream(ch, p, channelID...)
 	defer stream.Close()
 	server := sftp.NewRequestServer(stream, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
 	defer server.Close()
@@ -39,13 +40,13 @@ func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, 
 	ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 }
 func (p *fileProxy) permit(op, fp string) error {
-	if !contains(p.t.Spec.FileOps, op) || p.c.ticketValid(p.t, p.l.Source) != nil {
+	if !contains(p.t.Spec.FileOps, op) || p.c.activeTicketValid(p.t, p.l.Source) != nil {
 		return p.deny(op, fp, "SFTP operation denied")
 	}
 	return nil
 }
 func (p *fileProxy) deny(op, fp, reason string) error {
-	if err := p.c.Audit(p.l.User, "file.authorization", p.t.ID, "denied", p.l.Source, encode(map[string]string{"operation": op, "path": fp, "reason": reason})); err != nil {
+	if err := p.c.auditConnection(p.l, "file.authorization", p.t.ID, "denied", encode(map[string]string{"operation": op, "path": fp, "reason": reason}), p.channelID); err != nil {
 		return sftp.ErrSSHFxPermissionDenied
 	}
 	p.c.FailTicket(p.l, reason)
