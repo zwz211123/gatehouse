@@ -26,6 +26,7 @@ type Live struct {
 	Started                             atomic.Bool
 	TargetMu                            sync.Mutex
 	Target                              *ssh.Session
+	TargetAccount                       string
 	Term                                string
 	Columns, Rows                       uint32
 }

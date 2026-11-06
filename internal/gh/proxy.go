@@ -461,9 +461,10 @@ func (c *Core) directMenu(l *Live, ch ssh.Channel, account string, duration int)
 	defer s.Close()
 	l.TargetMu.Lock()
 	l.Target = s
+	l.TargetAccount = account
 	termName, columns, rows := l.Term, l.Columns, l.Rows
 	l.TargetMu.Unlock()
-	defer func() { l.TargetMu.Lock(); l.Target = nil; l.TargetMu.Unlock() }()
+	defer func() { l.TargetMu.Lock(); l.Target = nil; l.TargetAccount = ""; l.TargetMu.Unlock() }()
 	s.Stdout = ch
 	s.Stderr = ch.Stderr()
 	if termName != "" {

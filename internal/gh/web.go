@@ -247,7 +247,19 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		for _, l := range c.live {
 			if l.User == session.User || c.webAllowed(session, "session.read", l.ID) {
-				out = append(out, map[string]any{"id": l.ID, "user": l.User, "source": l.Source, "kind": l.Kind, "ticket": l.Ticket, "created": l.Created})
+				entry := map[string]any{"id": l.ID, "user": l.User, "source": l.Source, "kind": l.Kind, "ticket": l.Ticket, "created": l.Created}
+				if l.Ticket != "" {
+					var ticket Ticket
+					if c.Store.Get("ticket", l.Ticket, &ticket) == nil {
+						entry["account"] = ticket.Spec.Account
+					}
+					entry["bytes"] = l.Bytes.Load()
+				} else {
+					l.TargetMu.Lock()
+					entry["account"] = l.TargetAccount
+					l.TargetMu.Unlock()
+				}
+				out = append(out, entry)
 			}
 		}
 		c.mu.Unlock()
