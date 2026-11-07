@@ -221,23 +221,10 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, out)
 		return
 	case "/api/audit/export":
-		if r.Method != "GET" {
+		if r.Method != "GET" && r.Method != "POST" {
 			break
 		}
-		es, err := c.visibleAuditEvents(session, true)
-		if err != nil {
-			jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
-			return
-		}
-		selected := r.URL.Query()["record"]
-		out := []Event{}
-		for _, e := range es {
-			if len(selected) == 0 || contains(selected, auditRecordKey(e)) {
-				out = append(out, e)
-			}
-		}
-		w.Header().Set("Content-Disposition", "attachment; filename=gatehouse-audit.json")
-		jsonOut(w, 200, out)
+		c.auditExportHTTP(w, r, session)
 		return
 	case "/api/sessions":
 		if r.Method != "GET" {

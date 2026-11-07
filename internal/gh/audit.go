@@ -3,6 +3,7 @@ package gh
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -260,6 +261,15 @@ func (c *Core) auditRecordsHTTP(w http.ResponseWriter, r *http.Request, ws *WebS
 		jsonOut(w, 404, map[string]string{"error": "record not found"})
 		return
 	}
+	// The console filters and pages this summary snapshot locally. Aggregate once
+	// per refresh instead of rescanning the history for every hundred records.
+	if r.URL.Query().Get("limit") == "all" {
+		for i := range records {
+			records[i].Events = nil
+		}
+		jsonOut(w, 200, map[string]any{"records": records, "total": len(records), "offset": 0, "limit": len(records)})
+		return
+	}
 	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil || limit < 1 || limit > 100 {
 		limit = 50
@@ -280,4 +290,45 @@ func (c *Core) auditRecordsHTTP(w http.ResponseWriter, r *http.Request, ws *WebS
 		result[i].Events = nil
 	}
 	jsonOut(w, 200, map[string]any{"records": result, "total": len(records), "offset": offset, "limit": limit})
+}
+
+// POST selections avoid HTTP request-line limits. Keep GET for existing clients;
+// an explicit empty POST selection exports nothing, never the entire history.
+func (c *Core) auditExportHTTP(w http.ResponseWriter, r *http.Request, ws *WebSession) {
+	selected := r.URL.Query()["record"]
+	all := r.Method == "GET" && len(selected) == 0
+	if r.Method == "POST" {
+		var q struct {
+			Records []string `json:"records"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 24<<20))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&q) != nil || q.Records == nil || decoder.Decode(&struct{}{}) != io.EOF {
+			jsonOut(w, 400, map[string]string{"error": "invalid record selection"})
+			return
+		}
+		selected = q.Records
+	}
+	selection := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selection[id] = true
+	}
+	if !all && len(selection) == 0 {
+		w.Header().Set("Content-Disposition", "attachment; filename=gatehouse-audit.json")
+		jsonOut(w, 200, []Event{})
+		return
+	}
+	events, err := c.visibleAuditEvents(ws, true)
+	if err != nil {
+		jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
+		return
+	}
+	out := []Event{}
+	for _, e := range events {
+		if all || selection[auditRecordKey(e)] {
+			out = append(out, e)
+		}
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=gatehouse-audit.json")
+	jsonOut(w, 200, out)
 }

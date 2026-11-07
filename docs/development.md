@@ -113,3 +113,5 @@ Release 仅接受人工手动触发，不因 push、PR 或 tag 自动发布；�
 ## 修改 Web 界面
 
 源文件位于 `web/`，Vue 3.5.13 固定在 `web/vendor/`。修改模板、样式或脚本后运行 `npm run build:web`，提交源文件与 `internal/gh/webui/` 生成资源。CI 使用 `npm run check:web` 检查一致性；浏览器不执行模板编译，保持 CSP 的 `script-src 'self'`。日志显示词典位于 `web/audit-format.js`，只格式化结构化事件，不调用模型或其他在线服务。
+
+审计列表使用 `GET /api/audit/records?limit=all` 获取一次经过权限过滤的概要快照，前端在该快照内筛选和分页，详情按需读取。每次刷新只扫描并聚合一次保留期内的历史。旧的 `limit`/`offset` 分页接口仍可用。导出选择通过 `POST /api/audit/export` 的 `{"records":["connection:..."]}` 请求正文传入（最大 24 MiB），继续检查 Origin、CSRF、审计读取及导出权限；空数组导出空集合。兼容既有 GET 导出接口。
