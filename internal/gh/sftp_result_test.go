@@ -1,7 +1,7 @@
 package gh
 
 import (
-	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 	"testing"
 	"time"
 )
@@ -16,45 +16,58 @@ func TestSFTPSessionResultAudit(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer client.Close()
-			if mode == "malformed" {
-				session, err := client.NewSession()
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer session.Close()
-				input, err := session.StdinPipe()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err = session.RequestSubsystem("sftp"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = input.Write([]byte{0, 0, 0, 0}); err != nil {
-					t.Fatal(err)
-				}
-				done := make(chan error, 1)
-				go func() { done <- session.Wait() }()
-				select {
-				case err = <-done:
-					if err == nil {
-						t.Fatal("malformed session returned success")
+			channel, requests, err := client.OpenChannel("session", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer channel.Close()
+			type exitResult struct {
+				code     uint32
+				received bool
+			}
+			done := make(chan exitResult, 1)
+			go func() {
+				result := exitResult{}
+				for request := range requests {
+					if request.Type == "exit-status" {
+						var status struct{ Code uint32 }
+						if ssh.Unmarshal(request.Payload, &status) == nil {
+							result.code, result.received = status.Code, true
+						}
 					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("failed SFTP session did not finish")
+					if request.WantReply {
+						request.Reply(false, nil)
+					}
 				}
-			} else {
-				files, err := sftp.NewClient(client)
+				done <- result
+			}()
+			ok, err := channel.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"sftp"}))
+			if err != nil || !ok {
+				t.Fatalf("subsystem request: %v %v", ok, err)
+			}
+			if mode == "eof" {
+				raw := &rawSFTP{r: channel, w: channel}
+				raw.packet(t, 1, []byte{0, 0, 0, 3})
+				// Half-close only, leaving SSH open to receive exit-status before CLOSE.
+				if err = channel.CloseWrite(); err != nil {
+					t.Fatal(err)
+				}
+			} else if mode == "malformed" {
+				if _, err = channel.Write([]byte{0, 0, 0, 0}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case result := <-done:
+				want := uint32(1)
 				if mode == "eof" {
-					if err != nil {
-						t.Fatal(err)
-					}
-					files.Close()
-				} else {
-					if err == nil {
-						files.Close()
-						t.Fatal("broken target initialized SFTP")
-					}
+					want = 0
 				}
+				if !result.received || result.code != want {
+					t.Fatalf("exit status before channel close: received=%v code=%d want=%d", result.received, result.code, want)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("SFTP session did not finish")
 			}
 			expected := "error"
 			if mode == "eof" {

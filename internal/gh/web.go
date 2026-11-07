@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -156,7 +158,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		var u User
 		c.Store.Get("user", session.User, &u)
-		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities, "permissions": session.Snapshot})
+		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities, "ssh_address": net.JoinHostPort(c.Config.PublicHost, strconv.Itoa(c.Config.PublicPort)), "web_address": c.Config.WebURL})
 		return
 	case "/api/records":
 		if r.Method != "GET" {

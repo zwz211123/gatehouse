@@ -9,7 +9,7 @@ w.fetch=async(path,opts={})=>{requests.push({path,opts});if(failNetwork)throw Er
  if(path==='/api/challenge')value={csrf:'x'.repeat(32)};
  else if(path==='/api/redeem'){logged=true;value={ok:true}};
  if(!logged&&!['/api/challenge','/api/redeem'].includes(path)){status=401;value={error:'SSH token login required'}}
- else if(path==='/api/me')value={user:{id:'u',name:'管理员'},version:'dev-test',capabilities:['asset.read','asset.create','grant.read','proxy.shell','proxy.exec','proxy.tcp','file.read','web.login'],permissions:{'asset.create:*':true},ssh_address:'jump.test:2222',web_address:'https://jump.test:8443'};
+ else if(path==='/api/me')value={user:{id:'u',name:'管理员'},version:'dev-test',capabilities:['asset.read','asset.create','grant.read','proxy.shell','proxy.exec','proxy.tcp','file.read','web.login'],ssh_address:'jump.test:2222',web_address:'https://jump.test:8443'};
  else if(path==='/api/logout'){logged=false;value={ok:true}}
  else if(path.startsWith('/api/records?kind=')){const k=path.split('=')[1];if(k==='user'&&failUsers){status=403;value={error:'permission denied'}}else value=items[k]||[]}
  else if(path==='/api/settings')value=[{data:{id:'global',retention_days:90,max_outstanding:10,limits:{max_total:100,max_concurrent:100,max_sessions:16,max_channels:128,max_bytes:0,max_rate:0}},etag:'settings-etag'}];

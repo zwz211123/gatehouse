@@ -21,24 +21,34 @@ type fileProxy struct {
 }
 
 func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, ready func(), channelID ...string) (err error) {
+	var remote *sftp.Client
+	var stream *sftpAuditStream
+	var server *sftp.RequestServer
 	defer func() {
 		status := uint32(0)
 		if err != nil {
 			status = 1
 		}
+		// The SSH exit status must precede any cleanup that closes the channel.
 		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+		if server != nil {
+			server.Close()
+		}
+		if stream != nil {
+			stream.Close()
+		}
+		if remote != nil {
+			remote.Close()
+		}
 	}()
-	remote, e := sftp.NewClient(target)
-	if e != nil {
-		return e
+	remote, err = sftp.NewClient(target)
+	if err != nil {
+		return err
 	}
-	defer remote.Close()
 	ready()
 	p := &fileProxy{c: c, l: l, t: t, remote: remote}
-	stream := newSFTPAuditStream(ch, p, channelID...)
-	defer stream.Close()
-	server := sftp.NewRequestServer(stream, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
-	defer server.Close()
+	stream = newSFTPAuditStream(ch, p, channelID...)
+	server = sftp.NewRequestServer(stream, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
 	err = server.Serve()
 	if err == io.EOF {
 		return nil
