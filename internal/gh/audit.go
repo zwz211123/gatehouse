@@ -1,6 +1,7 @@
 package gh
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,73 +105,96 @@ func appendUnique(dst []string, value string) []string {
 	}
 	return dst
 }
-func groupAuditEvents(events []Event) []AuditRecord {
-	groups := map[string]*AuditRecord{}
-	seen := map[string]bool{}
-	for _, e := range events {
-		if seen[e.ID] {
-			continue
-		}
-		seen[e.ID] = true
-		key := auditRecordKey(e)
-		g := groups[key]
-		if g == nil {
-			g = &AuditRecord{ID: key, Category: e.Category, ConnectionID: e.ConnectionID, OperationID: e.OperationID, WebSessionID: e.WebSessionID, RelatedConnectionID: e.RelatedConnectionID, Actor: e.Actor, Source: e.Source, Entry: e.Entry, Origin: e.Origin, Ticket: e.Ticket, Action: e.Action, Resource: e.Resource, Start: e.Time, Targets: []string{}, Channels: []string{}, Modes: []string{}, Events: []Event{}}
-			groups[key] = g
-		}
-		if e.Time < g.Start {
-			g.Start = e.Time
-		}
-		if e.Time > g.End {
-			g.End = e.Time
-		}
-		g.Events = append(g.Events, e)
-		g.EventCount++
-		if auditFailure(e.Result) {
-			g.FailureCount++
-		}
-		g.Targets = appendUnique(g.Targets, e.Account)
-		g.Channels = appendUnique(g.Channels, e.ChannelID)
-		mode := ""
-		switch e.Action {
-		case "direct.start", "direct.close":
-			mode = "shell"
-		case "proxy.tcp", "proxy.tcp.close":
-			mode = "tcp"
-		case "proxy.start":
-			mode = e.Detail
-			if mode == "subsystem" {
-				mode = "sftp"
-			}
-		default:
-			if strings.HasPrefix(e.Action, "file.") {
-				mode = "sftp"
-			}
-		}
-		g.Modes = appendUnique(g.Modes, mode)
+
+// Summaries retain one accumulator per record, never packet payloads or an
+// event-ID set. Persisted audit rows are visited once, in sequence order.
+type auditGroup struct {
+	record            AuditRecord
+	closedAt          int64
+	targets, channels map[string]bool
+}
+type auditAccumulator struct {
+	groups     map[string]*auditGroup
+	keepEvents bool
+}
+
+func (a *auditAccumulator) add(e Event) {
+	if a.groups == nil {
+		a.groups = map[string]*auditGroup{}
 	}
-	out := make([]AuditRecord, 0, len(groups))
-	for _, g := range groups {
-		sort.SliceStable(g.Events, func(i, j int) bool {
-			if g.Events[i].Time == g.Events[j].Time {
-				return g.Events[i].Sequence < g.Events[j].Sequence
-			}
-			return g.Events[i].Time < g.Events[j].Time
-		})
-		if g.Category == "access" {
-			g.Partial = true
-			for _, e := range g.Events {
-				if e.Action == "ssh.login" {
-					g.Partial = false
-				}
-				if e.Action == "connection.close" {
-					g.Open = false
-					g.Closed = true
-					g.End = e.Time
-				}
+	key := auditRecordKey(e)
+	state := a.groups[key]
+	if state == nil {
+		state = &auditGroup{record: AuditRecord{ID: key, Category: e.Category, ConnectionID: e.ConnectionID, OperationID: e.OperationID, WebSessionID: e.WebSessionID, RelatedConnectionID: e.RelatedConnectionID, Actor: e.Actor, Source: e.Source, Entry: e.Entry, Origin: e.Origin, Ticket: e.Ticket, Action: e.Action, Resource: e.Resource, Start: e.Time, Targets: []string{}, Channels: []string{}, Modes: []string{}, Partial: e.Category == "access"}, targets: map[string]bool{}, channels: map[string]bool{}}
+		a.groups[key] = state
+	}
+	g := &state.record
+	if e.Time < g.Start {
+		g.Start = e.Time
+	}
+	if e.Time > g.End {
+		g.End = e.Time
+	}
+	if a.keepEvents {
+		g.Events = append(g.Events, e)
+	}
+	g.EventCount++
+	if auditFailure(e.Result) {
+		g.FailureCount++
+	}
+	if e.Account != "" && !state.targets[e.Account] {
+		state.targets[e.Account] = true
+		g.Targets = append(g.Targets, e.Account)
+	}
+	if e.ChannelID != "" && !state.channels[e.ChannelID] {
+		state.channels[e.ChannelID] = true
+		g.Channels = append(g.Channels, e.ChannelID)
+	}
+	if e.Category == "access" {
+		if e.Action == "ssh.login" {
+			g.Partial = false
+		}
+		if e.Action == "connection.close" {
+			g.Closed = true
+			if e.Time > state.closedAt {
+				state.closedAt = e.Time
 			}
 		}
-		out = append(out, *g)
+	}
+	mode := ""
+	switch e.Action {
+	case "direct.start", "direct.close":
+		mode = "shell"
+	case "proxy.tcp", "proxy.tcp.close":
+		mode = "tcp"
+	case "proxy.start":
+		mode = e.Detail
+		if mode == "subsystem" {
+			mode = "sftp"
+		}
+	default:
+		if strings.HasPrefix(e.Action, "file.") {
+			mode = "sftp"
+		}
+	}
+	g.Modes = appendUnique(g.Modes, mode)
+}
+func (a *auditAccumulator) records() []AuditRecord {
+	out := make([]AuditRecord, 0, len(a.groups))
+	for _, state := range a.groups {
+		g := state.record
+		if g.Closed {
+			g.End = state.closedAt
+		}
+		if a.keepEvents {
+			sort.SliceStable(g.Events, func(i, j int) bool {
+				if g.Events[i].Time == g.Events[j].Time {
+					return g.Events[i].Sequence < g.Events[j].Sequence
+				}
+				return g.Events[i].Time < g.Events[j].Time
+			})
+		}
+		out = append(out, g)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Start == out[j].Start {
@@ -180,37 +204,61 @@ func groupAuditEvents(events []Event) []AuditRecord {
 	})
 	return out
 }
+func groupAuditEvents(events []Event) []AuditRecord {
+	a := auditAccumulator{keepEvents: true}
+	seen := map[string]bool{}
+	for _, e := range events {
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			a.add(e)
+		}
+	}
+	return a.records()
+}
 
-// Read in bounded batches, closing each cursor before permission checks use
-// the same single SQLite connection. Authorization precedes aggregation.
-func (c *Core) visibleAuditEvents(ws *WebSession, exporting bool) ([]Event, error) {
-	out := []Event{}
+// Close every cursor before authorization queries share the single SQLite
+// connection. A fixed upper sequence prevents concurrent writes extending a scan.
+func (c *Core) walkVisibleAuditEvents(ctx context.Context, ws *WebSession, exporting bool, visit func(Event) error) error {
+	var upper int64
+	if err := c.Store.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq),0) FROM audits").Scan(&upper); err != nil {
+		return err
+	}
 	var after int64
 	allowed := map[string]bool{}
 	checked := map[string]bool{}
-	for {
-		batch, err := c.Store.auditBatch(after, 500)
+	for after < upper {
+		batch, err := c.Store.auditBatch(ctx, after, upper, 500)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if len(batch) == 0 {
 			break
 		}
 		for _, e := range batch {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			after = e.Sequence
 			if !checked[e.Resource] {
 				checked[e.Resource] = true
 				allowed[e.Resource] = c.webAllowed(ws, "audit.read", e.Resource) && (!exporting || c.webAllowed(ws, "audit.export", e.Resource))
 			}
 			if allowed[e.Resource] {
-				out = append(out, e)
+				if err := visit(e); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	return out, nil
+	return ctx.Err()
 }
-func (s *Store) auditBatch(after int64, limit int) ([]Event, error) {
-	rows, err := s.db.Query("SELECT seq,data FROM audits WHERE seq>? ORDER BY seq LIMIT ?", after, limit)
+func (c *Core) visibleAuditEvents(ws *WebSession, exporting bool) ([]Event, error) {
+	out := []Event{}
+	err := c.walkVisibleAuditEvents(context.Background(), ws, exporting, func(e Event) error { out = append(out, e); return nil })
+	return out, err
+}
+func (s *Store) auditBatch(ctx context.Context, after, upper int64, limit int) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT seq,data FROM audits WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?", after, upper, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -238,12 +286,27 @@ func (s *Store) auditBatch(after int64, limit int) ([]Event, error) {
 	return out, rows.Err()
 }
 func (c *Core) auditRecordsHTTP(w http.ResponseWriter, r *http.Request, ws *WebSession) {
-	events, err := c.visibleAuditEvents(ws, false)
+	id := r.URL.Query().Get("id")
+	summaries := auditAccumulator{}
+	selected := []Event{}
+	err := c.walkVisibleAuditEvents(r.Context(), ws, false, func(e Event) error {
+		if id != "" {
+			if auditRecordKey(e) == id {
+				selected = append(selected, e)
+			}
+		} else {
+			summaries.add(e)
+		}
+		return nil
+	})
 	if err != nil {
 		jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
 		return
 	}
-	records := groupAuditEvents(events)
+	records := summaries.records()
+	if id != "" {
+		records = groupAuditEvents(selected)
+	}
 	c.mu.Lock()
 	for i := range records {
 		if records[i].Category == "access" {
@@ -318,16 +381,16 @@ func (c *Core) auditExportHTTP(w http.ResponseWriter, r *http.Request, ws *WebSe
 		jsonOut(w, 200, []Event{})
 		return
 	}
-	events, err := c.visibleAuditEvents(ws, true)
-	if err != nil {
-		jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
-		return
-	}
 	out := []Event{}
-	for _, e := range events {
+	err := c.walkVisibleAuditEvents(r.Context(), ws, true, func(e Event) error {
 		if all || selection[auditRecordKey(e)] {
 			out = append(out, e)
 		}
+		return nil
+	})
+	if err != nil {
+		jsonOut(w, 503, map[string]string{"error": "audit unavailable"})
+		return
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=gatehouse-audit.json")
 	jsonOut(w, 200, out)
