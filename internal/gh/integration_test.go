@@ -50,7 +50,7 @@ type fixture struct {
 	root    string
 }
 
-func setup(t *testing.T) *fixture {
+func setup(t *testing.T, sftpBehavior ...string) *fixture {
 	t.Helper()
 	tmp := t.TempDir()
 	sign, _ := keypair(t)
@@ -76,7 +76,7 @@ func setup(t *testing.T) *fixture {
 	c.mu.Unlock()
 	targetSign, _ := keypair(t)
 	outSign, outRaw := keypair(t)
-	address, closeTarget := targetServer(t, targetSign, outSign.PublicKey())
+	address, closeTarget := targetServer(t, targetSign, outSign.PublicKey(), sftpBehavior...)
 	host, portS, _ := net.SplitHostPort(address)
 	var port int
 	fmt.Sscan(portS, &port)
@@ -90,7 +90,7 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(func() { stop(); closeTarget(); c.Close() })
 	return &fixture{c: c, l: l, address: ingress, sign: sign, root: tmp}
 }
-func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey) (string, func()) {
+func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey, sftpBehavior ...string) (string, func()) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
@@ -173,7 +173,15 @@ func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey) (string, fun
 								channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 								return
 							case "subsystem":
+								if len(sftpBehavior) > 0 && sftpBehavior[0] == "reject" {
+									r.Reply(false, nil)
+									return
+								}
 								r.Reply(true, nil)
+								if len(sftpBehavior) > 0 && sftpBehavior[0] == "bad-version" {
+									channel.Write([]byte{0, 0, 0, 1, 255})
+									return
+								}
 								srv, e := sftp.NewServer(channel)
 								if e == nil {
 									srv.Serve()

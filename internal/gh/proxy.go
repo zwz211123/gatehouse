@@ -15,7 +15,16 @@ import (
 func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	channelID := newID()
 	closeResult := "aborted"
-	defer func() { c.auditConnection(l, "proxy.close", t.ID, closeResult, "", channelID) }()
+	var sftpResult <-chan error
+	defer func() {
+		if sftpResult != nil {
+			closeResult = "ok"
+			if err := <-sftpResult; err != nil {
+				closeResult = "error"
+			}
+		}
+		c.auditConnection(l, "proxy.close", t.ID, closeResult, "", channelID)
+	}()
 	var client *ssh.Client
 	var remote ssh.Channel
 	var unbind func()
@@ -127,7 +136,6 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 				}
 				c.mu.Unlock()
 				if sftpMode {
-					closeResult = "ok"
 					if hasPTY {
 						if r.WantReply {
 							r.Reply(false, nil)
@@ -138,7 +146,12 @@ func (c *Core) proxySession(l *Live, t Ticket, ch ssh.Channel, reqs <-chan *ssh.
 					if r.WantReply {
 						r.Reply(true, nil)
 					}
-					go func() { c.serveSFTP(l, t, ch, client, func() { timer.Stop() }, channelID); finish() }()
+					result := make(chan error, 1)
+					sftpResult = result
+					go func() {
+						result <- c.serveSFTP(l, t, ch, client, func() { timer.Stop() }, channelID)
+						finish()
+					}()
 					continue
 				}
 				var rr <-chan *ssh.Request

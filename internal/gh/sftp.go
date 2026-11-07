@@ -20,10 +20,17 @@ type fileProxy struct {
 	channelID string
 }
 
-func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, ready func(), channelID ...string) {
+func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, ready func(), channelID ...string) (err error) {
+	defer func() {
+		status := uint32(0)
+		if err != nil {
+			status = 1
+		}
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+	}()
 	remote, e := sftp.NewClient(target)
 	if e != nil {
-		return
+		return e
 	}
 	defer remote.Close()
 	ready()
@@ -32,12 +39,11 @@ func (c *Core) serveSFTP(l *Live, t Ticket, ch ssh.Channel, target *ssh.Client, 
 	defer stream.Close()
 	server := sftp.NewRequestServer(stream, sftp.Handlers{FileGet: p, FilePut: p, FileCmd: p, FileList: p}, sftp.WithStartDirectory(t.Spec.FileRoot))
 	defer server.Close()
-	e = server.Serve()
-	status := uint32(0)
-	if e != nil && e != io.EOF {
-		status = 1
+	err = server.Serve()
+	if err == io.EOF {
+		return nil
 	}
-	ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+	return err
 }
 func (p *fileProxy) permit(op, fp string) error {
 	if !contains(p.t.Spec.FileOps, op) || p.c.activeTicketValid(p.t, p.l.Source) != nil {
