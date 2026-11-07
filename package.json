@@ -2,7 +2,16 @@
   "name": "gatehouse-web-tests",
   "private": true,
   "license": "MIT",
-  "scripts": { "test": "node tests/ui.cjs", "test:web": "node tests/ui.cjs" },
-  "devDependencies": { "jsdom": "30.1.3" },
-  "engines": { "node": ">=24" }
+  "scripts": {
+    "test": "node tests/ui.cjs",
+    "test:web": "node tests/ui.cjs",
+    "build:web": "node scripts/build_web.cjs",
+    "check:web": "node scripts/build_web.cjs --check"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
 }

@@ -36,6 +36,7 @@ type User struct {
 	Owner   bool   `json:"owner"`
 }
 type Key struct {
+	Name        string `json:"name,omitempty"`
 	ID          string `json:"id"`
 	User        string `json:"user"`
 	Public      string `json:"public"`
@@ -48,6 +49,7 @@ type Group struct {
 	Members []string `json:"members"`
 }
 type Asset struct {
+	Description  string   `json:"description,omitempty"`
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
 	Host         string   `json:"host"`
@@ -89,6 +91,7 @@ type Limits struct {
 func DefaultLimits() Limits { return Limits{7200, 300, 1, 1, 1, 1, 0, 0} }
 
 type Grant struct {
+	Name      string   `json:"name,omitempty"`
 	ID        string   `json:"id"`
 	Subject   string   `json:"subject"`
 	Group     string   `json:"group,omitempty"`
@@ -151,13 +154,25 @@ type Ticket struct {
 	Revoked           bool     `json:"revoked"`
 }
 type Event struct {
-	Time     int64  `json:"time"`
-	Actor    string `json:"actor"`
-	Action   string `json:"action"`
-	Resource string `json:"resource"`
-	Result   string `json:"result"`
-	Source   string `json:"source"`
-	Detail   string `json:"detail"`
+	ID                  string `json:"id,omitempty"`
+	Sequence            int64  `json:"-"`
+	Category            string `json:"category,omitempty"`
+	ConnectionID        string `json:"connection_id,omitempty"`
+	ChannelID           string `json:"channel_id,omitempty"`
+	OperationID         string `json:"operation_id,omitempty"`
+	WebSessionID        string `json:"web_session_id,omitempty"`
+	RelatedConnectionID string `json:"related_connection_id,omitempty"`
+	Account             string `json:"account,omitempty"`
+	Ticket              string `json:"ticket,omitempty"`
+	Entry               string `json:"entry,omitempty"`
+	Origin              string `json:"origin,omitempty"`
+	Time                int64  `json:"time"`
+	Actor               string `json:"actor"`
+	Action              string `json:"action"`
+	Resource            string `json:"resource"`
+	Result              string `json:"result"`
+	Source              string `json:"source"`
+	Detail              string `json:"detail"`
 }
 
 var Capabilities = strings.Fields("asset.read asset.create asset.update asset.delete asset.trust asset.special account.read account.create account.update account.delete account.chroot credential.read credential.create credential.import credential.generate credential.update credential.delete credential.test credential.bind user.read user.create user.update user.delete user.owner key.read key.create key.update key.delete group.read group.create group.update group.delete grant.read grant.create grant.update grant.delete session.read session.terminate audit.read audit.export config.read config.update backup.create backup.restore shell.direct proxy.create proxy.read proxy.revoke proxy.shell proxy.exec proxy.sftp proxy.scp proxy.tcp proxy.tcp.jump proxy.tcp.special proxy.multi proxy.reconnect file.read file.write file.list file.mkdir file.remove file.rename file.metadata web.login")

@@ -132,9 +132,16 @@ func TestSFTPClientInitializationAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := map[string]bool{}
+	connectionID, channelID := "", ""
 	for _, event := range events {
 		if event.Resource != ticket.ID || !strings.HasPrefix(event.Action, "file.") {
 			continue
+		}
+		if connectionID == "" {
+			connectionID, channelID = event.ConnectionID, event.ChannelID
+		}
+		if event.Category != "access" || event.ConnectionID == "" || event.ChannelID == "" || event.ConnectionID != connectionID || event.ChannelID != channelID || event.Ticket != ticket.ID || event.Account != "acct" {
+			t.Fatalf("SFTP event lost connection context: %+v", event)
 		}
 		if strings.Contains(event.Detail, payload) {
 			t.Fatal("file content leaked into audit")

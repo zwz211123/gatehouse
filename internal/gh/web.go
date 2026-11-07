@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -113,7 +115,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		c.web[hash(id)] = &WebSession{SourceAddr: source, User: token.User, Source: token.Source, Key: token.Key, Created: now(), Last: now(), Snapshot: snapshot, Fresh: map[string]int64{}}
+		c.web[hash(id)] = &WebSession{ID: newID(), SourceAddr: source, User: token.User, Source: token.Source, Key: token.Key, Created: now(), Last: now(), Snapshot: snapshot, Fresh: map[string]int64{}}
 		c.mu.Unlock()
 		http.SetCookie(w, &http.Cookie{Name: "__Host-ghb-session", Value: id, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 7200})
 		jsonOut(w, 200, map[string]bool{"ok": true})
@@ -125,6 +127,12 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/audit/records":
+		if r.Method != "GET" {
+			break
+		}
+		c.auditRecordsHTTP(w, r, session)
+		return
 	case "/api/settings":
 		if r.Method != "GET" || !c.webAllowed(session, "config.read", "*") {
 			jsonOut(w, 403, map[string]string{"error": "permission denied"})
@@ -150,7 +158,7 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		var u User
 		c.Store.Get("user", session.User, &u)
-		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities})
+		jsonOut(w, 200, map[string]any{"user": u, "version": Version, "capabilities": Capabilities, "ssh_address": net.JoinHostPort(c.Config.PublicHost, strconv.Itoa(c.Config.PublicPort)), "web_address": c.Config.WebURL})
 		return
 	case "/api/records":
 		if r.Method != "GET" {
@@ -215,18 +223,10 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, out)
 		return
 	case "/api/audit/export":
-		if r.Method != "GET" {
+		if r.Method != "GET" && r.Method != "POST" {
 			break
 		}
-		es, _ := c.Store.Events(1000)
-		out := []Event{}
-		for _, e := range es {
-			if c.webAllowed(session, "audit.read", e.Resource) && c.webAllowed(session, "audit.export", e.Resource) {
-				out = append(out, e)
-			}
-		}
-		w.Header().Set("Content-Disposition", "attachment; filename=gatehouse-audit.json")
-		jsonOut(w, 200, out)
+		c.auditExportHTTP(w, r, session)
 		return
 	case "/api/sessions":
 		if r.Method != "GET" {
@@ -236,7 +236,19 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		for _, l := range c.live {
 			if l.User == session.User || c.webAllowed(session, "session.read", l.ID) {
-				out = append(out, map[string]any{"id": l.ID, "user": l.User, "source": l.Source, "kind": l.Kind, "ticket": l.Ticket, "created": l.Created})
+				entry := map[string]any{"id": l.ID, "user": l.User, "source": l.Source, "kind": l.Kind, "ticket": l.Ticket, "created": l.Created}
+				if l.Ticket != "" {
+					var ticket Ticket
+					if c.Store.Get("ticket", l.Ticket, &ticket) == nil {
+						entry["account"] = ticket.Spec.Account
+					}
+					entry["bytes"] = l.Bytes.Load()
+				} else {
+					l.TargetMu.Lock()
+					entry["account"] = l.TargetAccount
+					l.TargetMu.Unlock()
+				}
+				out = append(out, entry)
 			}
 		}
 		c.mu.Unlock()
@@ -263,10 +275,16 @@ func (c *Core) webHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.management.Lock()
+		session.OperationID = newID()
 		v, e := c.Change(session, q, source)
 		c.management.Unlock()
 		c.Revalidate()
 		if e != nil {
+			result := "error"
+			if e == ErrDenied {
+				result = "denied"
+			}
+			c.auditWeb(session, q.Kind+"."+q.Operation, q.ID, result, "", source)
 			jsonOut(w, 403, map[string]string{"error": e.Error()})
 			return
 		}

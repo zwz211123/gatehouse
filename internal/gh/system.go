@@ -38,7 +38,7 @@ func (c *Core) systemChange(ws *WebSession, q Change, source string) (any, error
 		if q.ETag != hash(encode(current)) {
 			return nil, errorf("settings changed; reload")
 		}
-		if e := c.changeRecord(ws.User, "settings", "global", x, false, source); e != nil {
+		if e := c.changeRecord(ws.User, "settings", "global", x, false, source, webEvent(ws, "config.update", "global", "ok", "", source)); e != nil {
 			return nil, e
 		}
 		return map[string]any{"data": x, "etag": hash(encode(x))}, nil
@@ -67,7 +67,7 @@ func (c *Core) systemChange(ws *WebSession, q Change, source string) (any, error
 			if e != nil {
 				return nil, e
 			}
-			if e = c.Audit(ws.User, "backup.export", "global", "ok", source, ""); e != nil {
+			if e = c.auditWeb(ws, "backup.export", "global", "ok", "", source); e != nil {
 				return nil, e
 			}
 			return map[string]any{"filename": "gatehouse-backup.ghb", "archive": base64.StdEncoding.EncodeToString(b)}, nil
@@ -92,7 +92,7 @@ func (c *Core) systemChange(ws *WebSession, q Change, source string) (any, error
 			if e = writeExclusive(fp, b, 0600); e != nil {
 				return nil, e
 			}
-			if e = c.Audit(ws.User, "backup.restore.stage", "global", "ok", source, ""); e != nil {
+			if e = c.auditWeb(ws, "backup.restore.stage", "global", "ok", "", source); e != nil {
 				os.Remove(fp)
 				return nil, e
 			}

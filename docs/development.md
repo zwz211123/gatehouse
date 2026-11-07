@@ -5,7 +5,7 @@
 - Linux；Go 最低版本见 `go.mod`，当前项目检查使用 Go 1.27.3。
 - Python 3、`dpkg-deb`、xz、binutils，用于构建和检查 Debian 包。
 - OpenSSH 客户端、现代 SCP、sshpass、OpenSSL，用于集成测试。
-- Node.js 24 与 npm，仅用于 Web DOM 测试，生产运行和编译静态前端不需要 Node。
+- Node.js 24 与 npm，用于预编译 Vue 模板和 Web DOM 测试；生产运行及使用已提交静态资源构建 Go 二进制不需要 Node。
 - qemu-aarch64-static，用于在 amd64 主机运行 arm64 测试程序及包内 CLI。
 
 Debian 类开发机可按需要安装：
@@ -24,6 +24,7 @@ go mod download
 go test -race ./...
 go vet ./...
 npm ci
+npm run check:web
 npm run test:web
 ~~~
 
@@ -108,3 +109,9 @@ sudo env GHB_LEGACY_CLI_DEB=/absolute/path/gatehouse-cli_0.2.0_amd64.deb \
 4. 工作流检查版本和标签，然后复用完整 CI。全部成功后验证 SHA-256、二进制自报版本/提交与包版本，创建指向本次执行提交的标签和 Release，并上传所有 Debian 包、双架构 bundle、源码归档与校验清单。
 
 Release 仅接受人工手动触发，不因 push、PR 或 tag 自动发布；只能从 main 执行。已有标签会被拒绝，不覆盖已发布版本。发布运行使用只读权限构建，仅发布任务具有仓库内容写权限。该流程发布下载附件，不升级任何已部署服务器。CI 附件解压后按版本目录组织，例如 `{{ docs_version }}/`。
+
+## 修改 Web 界面
+
+源文件位于 `web/`，Vue 3.5.13 固定在 `web/vendor/`。修改模板、样式或脚本后运行 `npm run build:web`，提交源文件与 `internal/gh/webui/` 生成资源。CI 使用 `npm run check:web` 检查一致性；浏览器不执行模板编译，保持 CSP 的 `script-src 'self'`。日志显示词典位于 `web/audit-format.js`，只格式化结构化事件，不调用模型或其他在线服务。
+
+审计列表使用 `GET /api/audit/records?limit=all` 获取一次经过权限过滤的概要快照，前端在该快照内筛选和分页，详情按需读取。每次刷新固定开始时的最大日志序号，按 500 条一批读取并在权限过滤后累计概要，不保留逐事件载荷或逐事件 ID 索引；后续追加不会延长这次扫描，取消请求可中止扫描。概要内存随分组和不同目标、通道数量增长，而非 SFTP 包总数。详情和导出仅保留所选分组的事件；导出仍需与所选数据量相应的内存。旧的 `limit`/`offset` 分页接口仍可用。导出选择通过 `POST /api/audit/export` 的 `{"records":["connection:..."]}` 请求正文传入（最大 24 MiB），继续检查 Origin、CSRF、审计读取及导出权限；空数组导出空集合。兼容既有 GET 导出接口。

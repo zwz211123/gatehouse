@@ -19,6 +19,43 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 	if c.Store.Get("user", actor, &acting) != nil || !acting.Enabled {
 		return nil, ErrDenied
 	}
+	if q.Kind == "ticket" && q.Operation == "create" {
+		var spec Spec
+		if json.Unmarshal(q.Data, &spec) != nil {
+			return nil, errorf("invalid temporary account request")
+		}
+		if spec.TCPRoute == "" {
+			spec.TCPRoute = "target"
+		}
+		for _, cap := range specActions(spec) {
+			if !c.webAllowed(ws, cap, spec.Account) {
+				return nil, ErrDenied
+			}
+		}
+		for _, op := range spec.FileOps {
+			if !c.webAllowed(ws, "file."+op, spec.Account+":file:"+spec.FileRoot) {
+				return nil, ErrDenied
+			}
+		}
+		if contains(spec.Modes, "exec") && !c.webAllowed(ws, "proxy.exec", spec.Account+":exec:"+hash(spec.Command)) {
+			return nil, ErrDenied
+		}
+		if contains(spec.Modes, "tcp") && !c.webAllowed(ws, "proxy.tcp", tcpResource(spec)) {
+			return nil, ErrDenied
+		}
+		c.mu.Lock()
+		l := c.live[ws.Source]
+		valid := l != nil && l.User == ws.User && l.Key == ws.Key && c.sourceAlive(ws.Source)
+		c.mu.Unlock()
+		if !valid {
+			return nil, ErrDenied
+		}
+		t, pw, command, err := c.CreateTicket(l, spec, webEvent(ws, "proxy.issue", "", "ok", "", source))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ticket": t, "password": pw, "command": command}, nil
+	}
 	if q.Kind == "credential" && q.Operation == "test" {
 		var input struct {
 			Account string `json:"account"`
@@ -35,7 +72,7 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 			return nil, errorf("target connection or host-key check failed")
 		}
 		client.Close()
-		return map[string]bool{"ok": true}, c.Audit(actor, "credential.test", q.ID, "ok", source, "")
+		return map[string]bool{"ok": true}, c.auditWeb(ws, "credential.test", q.ID, "ok", "", source)
 	}
 	if q.Kind == "settings" || q.Kind == "backup" {
 		return c.systemChange(ws, q, source)
@@ -45,19 +82,25 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 		if c.Store.Get("ticket", q.ID, &t) != nil || (!c.webAllowed(ws, "proxy.revoke", q.ID) && !c.webAllowed(ws, "proxy.revoke", t.Spec.Account)) {
 			return nil, ErrDenied
 		}
-		return map[string]bool{"ok": true}, c.Revoke(actor, q.ID, source)
+		return map[string]bool{"ok": true}, c.Revoke(actor, q.ID, source, webEvent(ws, "proxy.revoke", q.ID, "ok", "", source))
 	}
 	if q.Kind == "session" && q.Operation == "terminate" {
 		if !c.webAllowed(ws, "session.terminate", q.ID) {
 			return nil, ErrDenied
 		}
 		c.mu.Lock()
+		defer c.mu.Unlock()
 		l := c.live[q.ID]
-		if l != nil {
-			l.Close()
+		if l == nil {
+			return nil, errorf("connection no longer active")
 		}
-		c.mu.Unlock()
-		return map[string]bool{"ok": true}, c.Audit(actor, "session.terminate", q.ID, "ok", source, "")
+		event := webEvent(ws, "session.terminate", q.ID, "ok", "", source)
+		event.RelatedConnectionID = q.ID
+		if err := c.AuditEvent(event); err != nil {
+			return nil, err
+		}
+		l.Close()
+		return map[string]bool{"ok": true}, nil
 	}
 	if !contains([]string{"user", "key", "group", "asset", "account", "credential", "grant"}, q.Kind) || !contains([]string{"create", "update", "delete"}, q.Operation) {
 		return nil, errorf("unsupported operation")
@@ -185,9 +228,9 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 		if q.Kind == "user" {
 			old["enabled"] = false
 			old["owner"] = false
-			return map[string]bool{"ok": true}, c.changeRecord(actor, q.Kind, q.ID, old, false, source)
+			return map[string]bool{"ok": true}, c.changeRecord(actor, q.Kind, q.ID, old, false, source, webEvent(ws, q.Kind+"."+q.Operation, q.ID, "ok", "", source))
 		}
-		return map[string]bool{"ok": true}, c.changeRecord(actor, q.Kind, q.ID, nil, true, source)
+		return map[string]bool{"ok": true}, c.changeRecord(actor, q.Kind, q.ID, nil, true, source, webEvent(ws, q.Kind+"."+q.Operation, q.ID, "ok", "", source))
 	}
 	id := q.ID
 	if q.Operation == "create" {
@@ -445,7 +488,7 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 		}
 		v = x
 	}
-	if e := c.changeRecord(actor, q.Kind, id, v, false, source); e != nil {
+	if e := c.changeRecord(actor, q.Kind, id, v, false, source, webEvent(ws, q.Kind+"."+q.Operation, id, "ok", "", source)); e != nil {
 		return nil, e
 	}
 	var m map[string]any
@@ -453,13 +496,17 @@ func (c *Core) Change(ws *WebSession, q Change, source string) (any, error) {
 	delete(m, "cipher")
 	return map[string]any{"data": m, "etag": hash(encode(m))}, nil
 }
-func (c *Core) changeRecord(actor, kind, id string, v any, del bool, source string) error {
+func (c *Core) changeRecord(actor, kind, id string, v any, del bool, source string, contexts ...Event) error {
 	tx, e := c.Store.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	event := Event{Time: now(), Actor: actor, Action: kind + ".change", Resource: id, Result: "ok", Source: source}
+	event := Event{Actor: actor, Action: kind + ".change", Resource: id, Result: "ok", Source: source}
+	if len(contexts) > 0 {
+		event = contexts[0]
+	}
+	event = prepareEvent(event)
 	if _, e = tx.Exec("INSERT INTO audits(data)VALUES(?)", encode(event)); e != nil {
 		c.auditFailed.Store(true)
 		return e

@@ -116,7 +116,7 @@ func (c *Core) ServeSSH(raw net.Conn) {
 	c.live[l.ID] = l
 	c.mu.Unlock()
 	defer c.drop(l)
-	if c.Audit(l.User, "ssh.login", l.ID, "ok", info.Remote, l.Kind) != nil {
+	if c.auditConnection(l, "ssh.login", l.ID, "ok", l.Kind, "") != nil {
 		return
 	}
 	go func() {
@@ -187,7 +187,7 @@ func (c *Core) ServeSSH(raw net.Conn) {
 			go func() { defer wg.Done(); defer channel.Close(); c.menuSession(l, channel, requests) }()
 			continue
 		}
-		if c.ticketValid(ticket, l.Source) != nil {
+		if c.activeTicketValid(ticket, l.Source) != nil {
 			ch.Reject(ssh.Prohibited, "authorization expired")
 			return
 		}
@@ -457,7 +457,7 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 					}
 				}
 				c.mu.Unlock()
-				io.WriteString(ch, "已撤销\r\n")
+				io.WriteString(ch, "已撤销入口，现有连接继续；新连接将被拒绝\r\n")
 			case "confirm":
 				if len(fields) == 3 && len(fields[2]) == 64 {
 					code := c.Confirm(l, fields[2])
@@ -517,11 +517,11 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 				}
 			case "revoke":
 				if len(fields) == 3 {
-					e := c.Revoke(l.User, fields[2], l.Source)
+					e := c.Revoke(l.User, fields[2], l.Source, Event{Actor: l.User, Action: "proxy.revoke", Resource: fields[2], Result: "ok", Source: l.Source, Category: "management", ConnectionID: l.ID, Origin: "ssh"})
 					if e != nil {
 						io.WriteString(ch, e.Error()+"\r\n")
 					} else {
-						io.WriteString(ch, "已撤销\r\n")
+						io.WriteString(ch, "已撤销入口，现有连接继续；新连接将被拒绝\r\n")
 					}
 				}
 			}

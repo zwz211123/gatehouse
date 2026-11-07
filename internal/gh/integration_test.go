@@ -50,7 +50,7 @@ type fixture struct {
 	root    string
 }
 
-func setup(t *testing.T) *fixture {
+func setup(t *testing.T, sftpBehavior ...string) *fixture {
 	t.Helper()
 	tmp := t.TempDir()
 	sign, _ := keypair(t)
@@ -76,7 +76,7 @@ func setup(t *testing.T) *fixture {
 	c.mu.Unlock()
 	targetSign, _ := keypair(t)
 	outSign, outRaw := keypair(t)
-	address, closeTarget := targetServer(t, targetSign, outSign.PublicKey())
+	address, closeTarget := targetServer(t, targetSign, outSign.PublicKey(), sftpBehavior...)
 	host, portS, _ := net.SplitHostPort(address)
 	var port int
 	fmt.Sscan(portS, &port)
@@ -90,7 +90,7 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(func() { stop(); closeTarget(); c.Close() })
 	return &fixture{c: c, l: l, address: ingress, sign: sign, root: tmp}
 }
-func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey) (string, func()) {
+func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey, sftpBehavior ...string) (string, func()) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
@@ -173,7 +173,15 @@ func targetServer(t *testing.T, sign ssh.Signer, pub ssh.PublicKey) (string, fun
 								channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 								return
 							case "subsystem":
+								if len(sftpBehavior) > 0 && sftpBehavior[0] == "reject" {
+									r.Reply(false, nil)
+									return
+								}
 								r.Reply(true, nil)
+								if len(sftpBehavior) > 0 && sftpBehavior[0] == "bad-version" {
+									channel.Write([]byte{0, 0, 0, 1, 255})
+									return
+								}
 								srv, e := sftp.NewServer(channel)
 								if e == nil {
 									srv.Serve()
@@ -518,7 +526,7 @@ func TestGeneratedCommandsWithOpenSSH(t *testing.T) {
 	}
 }
 
-func TestRevocationClosesActiveShell(t *testing.T) {
+func TestRevocationPreservesActiveShellAndBlocksNewConnections(t *testing.T) {
 	f := setup(t)
 	ticket, pw := f.ticket(t, Spec{Modes: []string{"shell"}})
 	client, e := f.dial(ticket, pw)
@@ -531,6 +539,10 @@ func TestRevocationClosesActiveShell(t *testing.T) {
 		t.Fatal(e)
 	}
 	out, _ := s.StdoutPipe()
+	in, err := s.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if e = s.Shell(); e != nil {
 		t.Fatal(e)
 	}
@@ -541,13 +553,21 @@ func TestRevocationClosesActiveShell(t *testing.T) {
 	if e = f.c.Revoke(f.l.User, ticket.ID, f.l.Source); e != nil {
 		t.Fatal(e)
 	}
-	done := make(chan error, 1)
-	go func() { done <- s.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("revoked session remained active")
+	if another, err := f.dial(ticket, pw); err == nil {
+		another.Close()
+		t.Fatal("revoked entry accepted a new connection")
 	}
+	if _, err = in.Write([]byte("alive")); err != nil {
+		t.Fatal("active shell closed by entry revocation", err)
+	}
+	echoed := make([]byte, 5)
+	if _, err = io.ReadFull(out, echoed); err != nil || string(echoed) != "alive" {
+		t.Fatalf("existing shell did not survive: %q %v", echoed, err)
+	}
+	if err = s.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
 }
 func TestTCPDestinationCannotChange(t *testing.T) {
 	f := setup(t)

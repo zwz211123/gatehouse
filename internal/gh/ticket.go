@@ -31,7 +31,7 @@ func specActions(s Spec) []string {
 	}
 	return a
 }
-func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
+func (c *Core) CreateTicket(l *Live, s Spec, contexts ...Event) (Ticket, string, string, error) {
 	var t Ticket
 	if len(s.Modes) == 0 || len(s.Modes) > 5 {
 		return t, "", "", fmt.Errorf("select explicit modes")
@@ -189,7 +189,15 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	}
 	t = Ticket{ID: newID(), Username: "ghp_" + strings.ToLower(newID()), Owner: l.User, Source: l.ID, SourceKey: l.Key, Spec: s, Created: created, Expires: expires, State: "issued", AssetVersion: b.Version, AccountVersion: a.Version, CredentialVersion: k.Version, GrantIDs: ids}
 	pw := random(32)
-	if e = c.Audit(l.User, "proxy.issue", t.ID, "ok", l.Source, encode(map[string]any{"modes": s.Modes, "account": s.Account, "command_hash": hash(s.Command)})); e != nil {
+	event := Event{Actor: l.User, Action: "proxy.issue", Result: "ok", Source: l.Source, Category: "management", ConnectionID: l.ID, Origin: "ssh"}
+	if len(contexts) > 0 {
+		event = contexts[0]
+	}
+	event.Resource = t.ID
+	event.Ticket = t.ID
+	event.Account = s.Account
+	event.Detail = encode(map[string]any{"modes": s.Modes, "account": s.Account, "command_hash": hash(s.Command)})
+	if e = c.AuditEvent(event); e != nil {
 		return Ticket{}, "", "", e
 	}
 	if e = c.Store.Put("ticket", t.ID, t); e != nil {
@@ -203,7 +211,11 @@ func (c *Core) CreateTicket(l *Live, s Spec) (Ticket, string, string, error) {
 	}
 	return t, pw, c.ConnectionOutput(t, pw), nil
 }
-func (c *Core) ticketValid(t Ticket, source string) error {
+func (c *Core) ticketValid(t Ticket, source string) error { return c.validateTicket(t, source, false) }
+func (c *Core) activeTicketValid(t Ticket, source string) error {
+	return c.validateTicket(t, source, true)
+}
+func (c *Core) validateTicket(t Ticket, source string, established bool) error {
 	var current Ticket
 	if c.Store.Get("ticket", t.ID, &current) != nil {
 		return ErrDenied
@@ -212,7 +224,7 @@ func (c *Core) ticketValid(t Ticket, source string) error {
 	if !limitsSubset(Limits{t.Spec.Duration, t.Spec.TTL, t.Spec.Total, t.Spec.Concurrent, t.Spec.Sessions, t.Spec.Channels, t.Spec.MaxBytes, t.Spec.MaxRate}, c.settings().Limits) {
 		return ErrDenied
 	}
-	if t.Revoked || t.State == "failed" || t.State == "revoked" || t.State == "expired" || !inCIDRs(source, t.Spec.CIDRs) {
+	if (!established && (t.Revoked || t.State == "revoked")) || t.State == "failed" || t.State == "expired" || !inCIDRs(source, t.Spec.CIDRs) {
 		return ErrDenied
 	}
 	var key Key
@@ -310,11 +322,11 @@ func (c *Core) FailTicket(l *Live, detail string) {
 		c.Store.Put("ticket", t.ID, t)
 	}
 	c.mu.Unlock()
-	c.Audit(l.User, "proxy.mismatch", l.Ticket, "denied", l.Source, detail)
+	c.auditConnection(l, "proxy.mismatch", l.Ticket, "denied", detail, "")
 	l.Close()
 	c.Revalidate()
 }
-func (c *Core) Revoke(actor, id, source string) error {
+func (c *Core) Revoke(actor, id, source string, contexts ...Event) error {
 	c.mu.Lock()
 	var t Ticket
 	if e := c.Store.Get("ticket", id, &t); e != nil {
@@ -327,7 +339,11 @@ func (c *Core) Revoke(actor, id, source string) error {
 			return ErrDenied
 		}
 	}
-	if e := c.Audit(actor, "proxy.revoke", id, "ok", source, ""); e != nil {
+	event := Event{Actor: actor, Action: "proxy.revoke", Resource: id, Result: "ok", Source: source}
+	if len(contexts) > 0 {
+		event = contexts[0]
+	}
+	if e := c.AuditEvent(event); e != nil {
 		c.mu.Unlock()
 		return e
 	}
@@ -419,7 +435,7 @@ func (c *Core) TicketPassword(l *Live, id string) (Ticket, string, error) {
 	if c.Store.Get("ticket-secret", id, &secret) != nil || secret["password"] == "" {
 		return t, "", errorf("旧凭据未保存可恢复密码，请重新申请")
 	}
-	if e := c.Audit(l.User, "proxy.credentials", id, "ok", l.Source, ""); e != nil {
+	if e := c.AuditEvent(Event{Actor: l.User, Action: "proxy.credentials", Resource: id, Result: "ok", Source: l.Source, Category: "management", ConnectionID: l.ID, Origin: "ssh"}); e != nil {
 		return t, "", e
 	}
 	return t, secret["password"], nil
@@ -492,7 +508,7 @@ func (c *Core) deleteTicketLocked(l *Live, id string) error {
 		return e
 	}
 	defer tx.Rollback()
-	event := Event{Time: now(), Actor: l.User, Action: "proxy.delete", Resource: id, Result: "ok", Source: l.Source}
+	event := prepareEvent(Event{Actor: l.User, Action: "proxy.delete", Resource: id, Result: "ok", Source: l.Source, Category: "management", ConnectionID: l.ID, Origin: "ssh"})
 	if c.auditFailed.Load() {
 		return errorf("audit unavailable")
 	}

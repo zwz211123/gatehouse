@@ -83,7 +83,7 @@ func (s *Store) Delete(kind, id string) error {
 	return e
 }
 func (s *Store) Audit(e Event) error {
-	e.Time = now()
+	e = prepareEvent(e)
 	_, err := s.db.Exec("INSERT INTO audits(data)VALUES(?)", encode(e))
 	return err
 }
@@ -91,7 +91,7 @@ func (s *Store) Events(limit int) ([]Event, error) {
 	if limit < 1 || limit > 1000 {
 		limit = 200
 	}
-	rows, e := s.db.Query("SELECT data FROM audits ORDER BY seq DESC LIMIT ?", limit)
+	rows, e := s.db.Query("SELECT seq,data FROM audits ORDER BY seq DESC LIMIT ?", limit)
 	if e != nil {
 		return nil, e
 	}
@@ -100,11 +100,16 @@ func (s *Store) Events(limit int) ([]Event, error) {
 	for rows.Next() {
 		var b string
 		var v Event
-		if e = rows.Scan(&b); e != nil {
+		if e = rows.Scan(&v.Sequence, &b); e != nil {
 			return nil, e
 		}
+		seq := v.Sequence
 		if e = json.Unmarshal([]byte(b), &v); e != nil {
 			return nil, e
+		}
+		v.Sequence = seq
+		if v.ID == "" {
+			v.ID = fmt.Sprintf("legacy-%d", seq)
 		}
 		a = append(a, v)
 	}

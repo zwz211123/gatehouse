@@ -22,6 +22,6 @@ with tarfile.open(archive_path) as archive:
         actual=archive.extractfile(member).read()
         assert hashlib.sha256(actual).digest()==hashlib.sha256((ROOT/relative).read_bytes()).digest(),relative
         names.append(relative)
-    for required in ['BUILD-INFO.json','mkdocs.yml','requirements-docs.txt','packaging/versioning.py','scripts/prepare_docs.py','README.md','README.en.md','LICENSE','SECURITY.md','CONTRIBUTING.md','go.mod','package-lock.json','docs/installation.md','.github/workflows/ci.yml']:
+    for required in ['BUILD-INFO.json','web/template.html','web/app.js','web/vendor/vue.global.prod.js','scripts/build_web.cjs','mkdocs.yml','requirements-docs.txt','packaging/versioning.py','scripts/prepare_docs.py','README.md','README.en.md','LICENSE','SECURITY.md','CONTRIBUTING.md','go.mod','package-lock.json','docs/installation.md','.github/workflows/ci.yml']:
         assert required in names,required
 print('Public source archive matches tracked project sources; no generated state or private-key files included.')
