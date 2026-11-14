@@ -235,6 +235,106 @@ func TestCompletionReplacementSpans(t *testing.T) {
 	}
 }
 
+func TestCompletionPartialNumericServerName(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, input, want string }{
+		{"room 20", "connect room 2", "connect room 20"},
+		{"Room 20", "connect room 2", "connect Room 20"},
+		{"中文机房 20", "connect 中文机房 2", "connect 中文机房 20"},
+	} {
+		asset.Name = tc.name
+		if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+			t.Fatal(err)
+		}
+		xs := f.c.completions(f.l, tc.input, len(tc.input))
+		if len(xs) != 1 || xs[0].value != tc.want {
+			t.Fatalf("%q: %v; want %q", tc.input, xs, tc.want)
+		}
+		rw := &completionStream{input: strings.NewReader(tc.input + "\t\r")}
+		terminal := console.NewTerminal(rw, "ghb> ")
+		f.c.setupCompletion(f.l, terminal)
+		got, err := terminal.ReadLine()
+		if err != nil || got != tc.want {
+			t.Fatalf("Tab: %q %v; want %q", got, err, tc.want)
+		}
+		account, duration, err := f.c.connectTarget(f.l, io.Discard, func() (string, error) { t.Fatal("single account prompted"); return "", io.EOF }, strings.TrimPrefix(got, "connect "))
+		if err != nil || account != "acct" || duration != 7200 {
+			t.Fatalf("completed numeric name parsed as duration: %q %d %v", account, duration, err)
+		}
+	}
+	asset.Name = "room 20"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	line := "connect room 2 3600"
+	xs := f.c.completions(f.l, line, len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 20 3600" {
+		t.Fatalf("lost explicit duration: %v", xs)
+	}
+	if xs = f.c.completions(f.l, line, len(line)); len(xs) != 0 {
+		t.Fatalf("completed duration as a target: %v", xs)
+	}
+}
+
+func TestNumericCompletionPrefixRespectsAvailabilityAndPermissions(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	asset.Name = "room"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	prefixAsset := asset
+	prefixAsset.ID, prefixAsset.Name = "prefix-asset", "room 20"
+	if err := f.c.Store.Put("asset", prefixAsset.ID, prefixAsset); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Store.Put("account", "prefix-account", Account{ID: "prefix-account", Asset: prefixAsset.ID, Name: "other", Credential: "cred", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	// A complete "room" target also exists; its optional duration must not
+	// prevent completing the authorized "room 20" prefix.
+	xs := f.c.completions(f.l, "connect room 2", len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 20" {
+		t.Fatalf("duration won over authorized name prefix: %v", xs)
+	}
+	if err := f.c.Store.Put("user", "reader", User{ID: "reader", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Store.Put("grant", "direct", Grant{ID: "direct", Subject: "reader", Issuer: f.l.User, Actions: []string{"shell.direct"}, Resources: []string{"acct"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"unauthorized", "source-denied", "disabled"} {
+		t.Run(scenario, func(t *testing.T) {
+			l := &Live{User: "reader", Source: f.l.Source}
+			if scenario == "source-denied" {
+				if err := f.c.Store.Put("grant", "prefix-direct", Grant{ID: "prefix-direct", Subject: "reader", Issuer: f.l.User, Actions: []string{"shell.direct"}, Resources: []string{"prefix-account"}, Enabled: true, CIDRs: []string{"192.0.2.0/24"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "disabled" {
+				l = f.l
+				prefixAsset.Enabled = false
+				if err := f.c.Store.Put("asset", prefixAsset.ID, prefixAsset); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// An unavailable prefix must not change where the authorized
+			// target ends, or completing "room" would silently remove " 2".
+			xs := f.c.completions(l, "connect room 2", len("connect room"))
+			if len(xs) != 1 || xs[0].value != "connect room 2" {
+				t.Fatalf("unavailable prefix changed duration parsing: %v", xs)
+			}
+		})
+	}
+}
+
 func TestMenuArrowCompletionOverSSH(t *testing.T) {
 	f := setup(t)
 	client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})

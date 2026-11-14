@@ -20,6 +20,12 @@ type connectChoice struct {
 
 // Account IDs take precedence over server names, including unavailable IDs.
 func (c *Core) connectChoices(l *Live, ref string) ([]connectChoice, error) {
+	return c.connectChoicesMatching(l, ref, false)
+}
+
+// Completion can also match name prefixes, using exactly the same account-ID
+// precedence, source authorization and enabled-target checks as connection.
+func (c *Core) connectChoicesMatching(l *Live, ref string, allowPrefix bool) ([]connectChoice, error) {
 	accounts, err := list[Account](c.Store, "account")
 	if err != nil {
 		return nil, err
@@ -38,7 +44,14 @@ func (c *Core) connectChoices(l *Live, ref string) ([]connectChoice, error) {
 			continue
 		}
 		_, asset, _, err := c.ownerAccount(l.User, a.ID)
-		if err == nil && (byID || asset.Name == ref) {
+		if err != nil {
+			continue
+		}
+		nameMatches := asset.Name == ref
+		if allowPrefix && terminalLabel(asset.Name) == asset.Name {
+			nameMatches = strings.HasPrefix(strings.ToLower(asset.Name), strings.ToLower(ref))
+		}
+		if byID || nameMatches {
 			choices = append(choices, connectChoice{a, asset})
 		}
 	}
@@ -145,7 +158,12 @@ func (c *Core) completionSpan(l *Live, line string, pos int) (completionSpan, bo
 		if len(exact) == 0 {
 			if i := strings.LastIndexAny(trimmedArgs, " \t"); i >= 0 {
 				if _, err := strconv.Atoi(trimmedArgs[i+1:]); err == nil {
-					end = start + len(strings.TrimRight(trimmedArgs[:i], " \t"))
+					// A numeric last word may still belong to an incomplete
+					// name ("room 2" -> "room 20"), not a duration.
+					prefixes, _ := c.connectChoicesMatching(l, trimmedArgs, true)
+					if len(prefixes) == 0 {
+						end = start + len(strings.TrimRight(trimmedArgs[:i], " \t"))
+					}
 				}
 			}
 		}
