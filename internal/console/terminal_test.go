@@ -229,3 +229,30 @@ func (b *lockedBuffer) Write(p []byte) (int, error) {
 	defer b.mu.Unlock()
 	return b.Buffer.Write(p)
 }
+
+func TestFieldPromptRedrawAndRestore(t *testing.T) {
+	for _, input := range []string{"12\x1b[D3\r", "\x03", ""} {
+		t.Run(fmt.Sprintf("%q", input), func(t *testing.T) {
+			rw := &stream{Reader: strings.NewReader(input)}
+			terminal := NewTerminal(rw, "ghb> ")
+			got, err := terminal.ReadLineWithPrompt("连接次数 [1]: ")
+			if input != "" && input != "\x03" && (err != nil || got != "132") {
+				t.Fatalf("%q %v", got, err)
+			}
+			if !strings.HasPrefix(rw.Buffer.String(), "\r\x1b[J连接次数 [1]: ") {
+				t.Fatalf("field label not painted: %q", rw.Buffer.String())
+			}
+			if terminal.prompt != "ghb> " {
+				t.Fatalf("menu prompt not restored: %q", terminal.prompt)
+			}
+			rw.Reader = strings.NewReader("help\r")
+			rw.Buffer.Reset()
+			if got, err := terminal.ReadLine(); err != nil || got != "help" {
+				t.Fatalf("%q %v", got, err)
+			}
+			if !strings.HasPrefix(rw.Buffer.String(), "\r\x1b[Jghb> ") {
+				t.Fatal("field label leaked into menu")
+			}
+		})
+	}
+}

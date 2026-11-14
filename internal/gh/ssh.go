@@ -398,7 +398,7 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *console.Terminal) {
 		case "clear":
 			io.WriteString(ch, "\x1b[H\x1b[2J\x1b[3J")
 		case "help":
-			io.WriteString(ch, "connect <账号ID或服务器名> [秒数]：单账号直接连接，多账号按序号选择，0 返回。Tab 打开模糊补全，四个方向键/Tab 选择，Enter 接受后再按 Enter 执行，Ctrl-G 取消。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
+			io.WriteString(ch, "connect <账号ID或服务器名> [秒数]：单账号直接连接，多账号按序号选择，0 返回。Tab 打开模糊补全，四个方向键/Tab 选择，Enter 接受后再按 Enter 执行，Ctrl-G 取消。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 交互申请，proxy create --json 粘贴 JSON。向导支持 /back 返回、/cancel 取消；回车保留当前值，确认后才创建。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
 		case "whoami":
 			io.WriteString(ch, "用户ID: "+l.User+" 来源: "+l.Source+"\r\n")
 		case "list", "search":
@@ -470,20 +470,31 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *console.Terminal) {
 			}
 			switch fields[1] {
 			case "create":
-				io.WriteString(ch, "请输入完整 JSON 申请（示例与字段见手册）:\r\n")
-				body, e := readPrompt()
-				if e != nil {
-					return
-				}
-				var s Spec
-				if e = json.Unmarshal([]byte(body), &s); e != nil {
-					io.WriteString(ch, "JSON 错误\r\n")
+				if len(fields) > 3 || len(fields) == 3 && fields[2] != "--json" {
+					io.WriteString(ch, "用法: proxy create [--json]\r\n")
 					continue
 				}
-				t, pw, _, e := c.CreateTicket(l, s)
+				if len(fields) == 2 && terminal == nil {
+					io.WriteString(ch, "交互申请需要终端；请使用 ssh -t，或执行 proxy create --json\r\n")
+					continue
+				}
+				readField := func(prompt string) (string, error) {
+					if terminal == nil {
+						io.WriteString(ch, prompt)
+						return readPrompt()
+					}
+					callback := terminal.AutoCompleteCallback
+					terminal.AutoCompleteCallback = nil
+					defer func() { terminal.AutoCompleteCallback = callback }()
+					return terminal.ReadLineWithPrompt(prompt)
+				}
+				t, pw, e := c.proxyCreate(l, ch, readField, len(fields) == 3)
+				if e == io.EOF {
+					return
+				}
 				if e != nil {
 					io.WriteString(ch, e.Error()+"\r\n")
-				} else {
+				} else if t.ID != "" {
 					io.WriteString(ch, strings.ReplaceAll(c.ConnectionSummary(t, pw), "\n", "\r\n"))
 					if c.commandPicker(ch, readPrompt, t, pw) != nil {
 						return
