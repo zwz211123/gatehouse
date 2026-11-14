@@ -156,8 +156,10 @@ func TestCompletionRealKeys(t *testing.T) {
 		{"backtab", "proxy \t\x1b[Z\r\r", "proxy delete"},
 		{"cycle", "proxy \t\t\t\x1b[A\r\r", "proxy list"},
 		{"cancel", "proxy \t\x07list\r", "proxy list"},
+		{"single-cancel", "proxy cr\t\x07eate\r", "proxy create"},
+		{"single-cycle", "proxy cr\t\x1b[D\x1b[Z\r\r", "proxy create"},
 		{"edit-after-selection", "proxy \t\x1b[B\r\x1b[D\x7fX\r", "proxy liXt"},
-		{"middle-of-token", "proxy create\x1b[D\x1b[D\x1b[D\t\r", "proxy create"},
+		{"middle-of-token", "proxy create\x1b[D\x1b[D\x1b[D\t\r\r", "proxy create"},
 		{"cursor-before-suffix", "proxy cr suffix\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\tX\r", "proxy createX suffix"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +175,112 @@ func TestCompletionRealKeys(t *testing.T) {
 				t.Fatalf("stole target input: %q", remaining)
 			}
 		})
+	}
+}
+
+func TestSingleCompletionRequiresAcceptance(t *testing.T) {
+	f := setup(t)
+	for _, input := range []string{"proxy cr", "clr", "connect ac"} {
+		rw := &completionStream{input: strings.NewReader(input + "\t\r")}
+		terminal := console.NewTerminal(rw, "ghb> ")
+		f.c.setupCompletion(f.l, terminal)
+		line, err := terminal.ReadLine()
+		if err != io.EOF {
+			t.Fatalf("first Enter submitted single candidate %q: %v", line, err)
+		}
+		if !strings.Contains(rw.output.String(), "1/1") {
+			t.Fatal("single preview lacks acceptance instructions")
+		}
+	}
+}
+
+func TestSingleDeleteCompletionOverSSH(t *testing.T) {
+	f := setup(t)
+	ticket, _ := f.ticket(t, Spec{Modes: []string{"shell"}})
+	if err := f.c.Revoke(f.l.User, ticket.ID, f.l.Source); err != nil {
+		t.Fatal(err)
+	}
+	client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err = session.RequestPty("xterm", 24, 80, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := session.StdinPipe()
+	out, _ := session.StdoutPipe()
+	if err = session.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- func() error {
+			until := func(want string) error {
+				var output strings.Builder
+				for !strings.HasSuffix(output.String(), want) {
+					var b [1]byte
+					n, err := out.Read(b[:])
+					if n > 0 {
+						output.WriteByte(b[0])
+					}
+					if err != nil {
+						return fmt.Errorf("waiting for %q: %w; output=%q", want, err, output.String())
+					}
+				}
+				return nil
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			prefix := "proxy delete " + ticket.ID[:len(ticket.ID)-2]
+			// First Enter must only accept. Clear the line and run whoami as
+			// a synchronization barrier, then inspect the credential record.
+			if _, err := io.WriteString(in, prefix+"\t\r\x15whoami\r"); err != nil {
+				return err
+			}
+			if err := until("用户ID: "); err != nil {
+				return err
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			var current Ticket
+			if err := f.c.Store.Get("ticket", ticket.ID, &current); err != nil {
+				return fmt.Errorf("first Enter deleted the credential: %w", err)
+			}
+			// With the second Enter, the same completed deletion must execute.
+			if _, err := io.WriteString(in, prefix+"\t\r\r"); err != nil {
+				return err
+			}
+			if err := until("已删除凭据记录，审计日志保留\r\n"); err != nil {
+				return err
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			if err := f.c.Store.Get("ticket", ticket.ID, &current); err == nil {
+				return fmt.Errorf("second Enter did not delete the credential")
+			}
+			if _, err := io.WriteString(in, "exit\r"); err != nil {
+				return err
+			}
+			_, err := io.Copy(io.Discard, out)
+			return err
+		}()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("single-candidate deletion confirmation stalled")
 	}
 }
 
@@ -254,7 +362,7 @@ func TestCompletionPartialNumericServerName(t *testing.T) {
 		if len(xs) != 1 || xs[0].value != tc.want {
 			t.Fatalf("%q: %v; want %q", tc.input, xs, tc.want)
 		}
-		rw := &completionStream{input: strings.NewReader(tc.input + "\t\r")}
+		rw := &completionStream{input: strings.NewReader(tc.input + "\t\r\r")}
 		terminal := console.NewTerminal(rw, "ghb> ")
 		f.c.setupCompletion(f.l, terminal)
 		got, err := terminal.ReadLine()
@@ -395,7 +503,7 @@ func TestMenuTabClearAndCredentialList(t *testing.T) {
 	done := make(chan string, 1)
 	go func() { b, _ := io.ReadAll(out); done <- string(b) }()
 	// clear via fuzzy completion; review the existing account, show exec only, return.
-	fmt.Fprint(in, "clr\t\rproxy list\r1\r2\r0\r0\rexit\r")
+	fmt.Fprint(in, "clr\t\r\rproxy list\r1\r2\r0\r0\rexit\r")
 	select {
 	case output := <-done:
 		for _, want := range []string{"\x1b[3J", ticket.Username, pw, "[exec]", "uname"} {

@@ -249,7 +249,7 @@ func (c *Core) setupCompletion(l *Live, terminal *console.Terminal) {
 	originalPos, lastPos, index, suffixLen, start := 0, 0, -1, 0, 0
 	reset := func() { candidates = nil; terminal.SetSuggestions(nil) }
 	terminal.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
-		active := len(candidates) > 1 && line == last && pos == lastPos
+		active := len(candidates) > 0 && line == last && pos == lastPos
 		if active {
 			switch key {
 			case '\r', '\n':
@@ -285,26 +285,22 @@ func (c *Core) setupCompletion(l *Live, terminal *console.Terminal) {
 		}
 		last = candidates[index].value
 		lastPos = len(last) - suffixLen
-		if len(candidates) > 1 {
-			_, height := terminal.Size()
-			pageSize := min(8, max(1, height-2))
-			pageStart := index / pageSize * pageSize
-			pageEnd := min(pageStart+pageSize, len(candidates))
-			rows := make([]string, 0, pageEnd-pageStart+1)
-			for i := pageStart; i < pageEnd; i++ {
-				marker := "  "
-				if i == index {
-					marker = "› "
-				}
-				x := candidates[i]
-				label := x.value[start : len(x.value)-suffixLen]
-				rows = append(rows, marker+terminalLabel(label)+"  — "+terminalLabel(x.description))
+		_, height := terminal.Size()
+		pageSize := min(8, max(1, height-2))
+		pageStart := index / pageSize * pageSize
+		pageEnd := min(pageStart+pageSize, len(candidates))
+		rows := make([]string, 0, pageEnd-pageStart+1)
+		for i := pageStart; i < pageEnd; i++ {
+			marker := "  "
+			if i == index {
+				marker = "› "
 			}
-			rows = append(rows, fmt.Sprintf("%d/%d · Tab/方向键选择 · Enter 接受 · Ctrl-G 取消", index+1, len(candidates)))
-			terminal.SetSuggestions(rows)
-		} else {
-			terminal.SetSuggestions(nil)
+			x := candidates[i]
+			label := x.value[start : len(x.value)-suffixLen]
+			rows = append(rows, marker+terminalLabel(label)+"  — "+terminalLabel(x.description))
 		}
+		rows = append(rows, fmt.Sprintf("%d/%d · Tab/方向键选择 · Enter 接受 · Ctrl-G 取消", index+1, len(candidates)))
+		terminal.SetSuggestions(rows)
 		return last, lastPos, true
 	}
 }
