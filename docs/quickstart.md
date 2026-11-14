@@ -63,7 +63,7 @@ connect ACCOUNT_ID
 
 ## 6. 给新终端签发临时入口
 
-在菜单执行 `proxy create`，然后提交一行 JSON：
+在菜单执行 `proxy create` 可交互申请。需要使用下方 JSON 示例时，执行 `proxy create --json`，然后提交一行 JSON：
 
 ~~~json
 {"account":"ACCOUNT_ID","modes":["shell"],"pty":"require","ttl":300,"duration":1800,"total":1,"concurrent":1,"sessions":1,"channels":1}
