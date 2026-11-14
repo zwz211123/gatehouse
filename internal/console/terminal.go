@@ -167,30 +167,34 @@ func safeText(s string) string {
 
 func (t *Terminal) ReadLine() (string, error) {
 	t.mu.Lock()
+	// Every return holds mu: make the state transition and unlock atomic
+	// to SetSize, including after the submitted newline has been written.
+	defer func() {
+		t.reading = false
+		t.mu.Unlock()
+	}()
 	t.reading = true
 	t.line, t.pos, t.viewStart = nil, 0, 0
 	t.suggestions, t.historyIndex = nil, -1
 	err := t.paint(&strings.Builder{})
-	t.mu.Unlock()
-	defer func() {
-		t.mu.Lock()
-		t.reading = false
-		t.mu.Unlock()
-	}()
 	if err != nil {
 		return "", err
 	}
 	pasting := false
 	for {
-		key, err := t.readKey()
-		t.mu.Lock()
+		// Input can block. Reacquire mu even if the reader panics, so the
+		// function-level cleanup always owns the lock.
+		key, err := func() (rune, error) {
+			t.mu.Unlock()
+			defer t.mu.Lock()
+			return t.readKey()
+		}()
 		if err != nil {
 			t.suggestions = nil
 			if t.menuRows > 0 {
 				_ = t.paint(&strings.Builder{})
 			}
 			line := string(t.line)
-			t.mu.Unlock()
 			return line, err
 		}
 		if key == keyPasteStart || key == keyPasteEnd {
@@ -199,27 +203,27 @@ func (t *Terminal) ReadLine() (string, error) {
 				t.suggestions = nil
 				_ = t.paint(&strings.Builder{})
 			}
-			t.mu.Unlock()
 			continue
 		}
 		if !pasting && (key == 3 || key == 4 && len(t.line) == 0) {
 			t.suggestions = nil
 			_ = t.paint(&strings.Builder{})
-			t.mu.Unlock()
 			return "", io.EOF
 		}
 		if !pasting && t.AutoCompleteCallback != nil {
 			callback := t.AutoCompleteCallback
 			line, pos := string(t.line), len(string(t.line[:t.pos]))
-			t.mu.Unlock()
-			next, nextPos, consumed := callback(line, pos, key)
-			t.mu.Lock()
+			// Callbacks may acquire mu through SetSuggestions or Size.
+			next, nextPos, consumed := func() (string, int, bool) {
+				t.mu.Unlock()
+				defer t.mu.Lock()
+				return callback(line, pos, key)
+			}()
 			if consumed {
 				if nextPos >= 0 && nextPos <= len(next) && utf8.ValidString(next[:nextPos]) && utf8.ValidString(next) {
 					t.line, t.pos = []rune(next), utf8.RuneCountInString(next[:nextPos])
 				}
 				err = t.paint(&strings.Builder{})
-				t.mu.Unlock()
 				if err != nil {
 					return "", err
 				}
@@ -241,7 +245,6 @@ func (t *Terminal) ReadLine() (string, error) {
 					t.history = t.history[1:]
 				}
 			}
-			t.mu.Unlock()
 			return line, err
 		}
 		var b strings.Builder
@@ -254,7 +257,6 @@ func (t *Terminal) ReadLine() (string, error) {
 			t.insert(key)
 		}
 		err = t.paint(&b)
-		t.mu.Unlock()
 		if err != nil {
 			return "", err
 		}
