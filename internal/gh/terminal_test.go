@@ -590,6 +590,114 @@ func TestMenuConnectByServerName(t *testing.T) {
 	}
 }
 
+func TestMenuConnectLineEndingHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial, afterReady, want string
+		multiple                        bool
+	}{
+		{"CRLF-queued", "connect acct\r\nhello", "", "hello", false},
+		{"CRLF-fragmented", "connect acct\r", "\nhello", "hello", false},
+		{"CR-only", "connect acct\r", "hello", "hello", false},
+		{"CR-preserve-later-LF", "connect acct\r", "h\nabc", "h\nabc", false},
+		{"LF-only", "connect acct\nhello", "", "hello", false},
+		{"preserve-next-LF", "connect acct\r\n\nabcd", "", "\nabcd", false},
+		{"numeric-prompt-CRLF", "connect target\r\n", "1\r\nhello", "hello", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			if tc.multiple {
+				if err := f.c.Store.Put("account", "acct2", Account{ID: "acct2", Asset: "asset", Name: "other", Credential: "cred", Enabled: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if err = session.RequestPty("xterm", 24, 80, nil); err != nil {
+				t.Fatal(err)
+			}
+			in, _ := session.StdinPipe()
+			out, _ := session.StdoutPipe()
+			if err = session.Shell(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- func() error {
+					until := func(want string) error {
+						var output strings.Builder
+						for !strings.HasSuffix(output.String(), want) {
+							var b [1]byte
+							n, err := out.Read(b[:])
+							if n > 0 {
+								output.WriteByte(b[0])
+							}
+							if err != nil {
+								return fmt.Errorf("waiting for %q: %w; output=%q", want, err, output.String())
+							}
+						}
+						return nil
+					}
+					// The renderer positions the cursor after drawing the prompt.
+					if err := until("\x1b[5C"); err != nil {
+						return err
+					}
+					if _, err := io.WriteString(in, tc.initial); err != nil {
+						return err
+					}
+					if tc.multiple {
+						if err := until("\x1b[5C"); err != nil {
+							return err
+						}
+						if _, err := io.WriteString(in, tc.afterReady); err != nil {
+							return err
+						}
+					}
+					if err := until("TARGET-SHELL\n"); err != nil {
+						return err
+					}
+					if !tc.multiple && tc.afterReady != "" {
+						if _, err := io.WriteString(in, tc.afterReady); err != nil {
+							return err
+						}
+					}
+					got := make([]byte, len(tc.want))
+					if _, err := io.ReadFull(out, got); err != nil {
+						return err
+					}
+					if string(got) != tc.want {
+						return fmt.Errorf("target received %q; want exactly %q", got, tc.want)
+					}
+					if err := until("\x1b[5C"); err != nil {
+						return err
+					}
+					_, err := io.WriteString(in, "exit\r\n")
+					if err != nil {
+						return err
+					}
+					_, err = io.Copy(io.Discard, out)
+					return err
+				}()
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("line-ending handoff stalled")
+			}
+		})
+	}
+}
+
 func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
 	f := setup(t)
 	var asset Asset

@@ -360,6 +360,7 @@ func (c *Core) tcpChannel(l *Live, t Ticket, n ssh.NewChannel) {
 type inputHub struct {
 	data    chan []byte
 	pending []byte
+	skipLF  bool
 	mu      sync.Mutex
 	done    chan struct{}
 	once    sync.Once
@@ -388,39 +389,62 @@ func newInputHub(r io.Reader) *inputHub {
 	return h
 }
 func (h *inputHub) read(ctx context.Context, b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	default:
-	}
-	if len(h.pending) == 0 {
+	for {
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-h.done:
-			return 0, io.EOF
-		case x, ok := <-h.data:
-			if !ok {
-				return 0, io.EOF
-			}
-			h.pending = x
+		default:
 		}
+		if len(h.pending) == 0 {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-h.done:
+				return 0, io.EOF
+			case x, ok := <-h.data:
+				if !ok {
+					return 0, io.EOF
+				}
+				h.pending = x
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		// Only the byte immediately after a menu CR can be its optional
+		// LF. Apply this once, even if the next reader is the target's
+		// cancelReader or the LF arrives in a later SSH packet.
+		if h.skipLF {
+			h.skipLF = false
+			if h.pending[0] == '\n' {
+				h.pending = h.pending[1:]
+				if len(h.pending) == 0 {
+					continue
+				}
+			}
+		}
+		n := copy(b, h.pending)
+		h.pending = h.pending[n:]
+		return n, nil
 	}
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	default:
-	}
-	n := copy(b, h.pending)
-	h.pending = h.pending[n:]
-	return n, nil
 }
 
 type inputChannel struct {
 	ssh.Channel
 	hub *inputHub
+}
+
+// SkipOptionalLineFeed marks the menu CR delimiter in the shared input stream.
+// It never waits for another byte or consumes the first non-LF target byte.
+func (x *inputChannel) SkipOptionalLineFeed() {
+	x.hub.mu.Lock()
+	defer x.hub.mu.Unlock()
+	x.hub.skipLF = true
 }
 
 func (x *inputChannel) Close() error {

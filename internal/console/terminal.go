@@ -343,7 +343,14 @@ func (t *Terminal) readKey() (rune, error) {
 			}
 			r, _ := utf8.DecodeRune(b)
 			if r == '\r' {
-				t.skipLF = true
+				// A shared input owner must carry delimiter state across a
+				// handoff to a target shell, not just to the next ReadLine.
+				// Do not read ahead: CR-only clients must enter immediately.
+				if input, ok := t.rw.(interface{ SkipOptionalLineFeed() }); ok {
+					input.SkipOptionalLineFeed()
+				} else {
+					t.skipLF = true
+				}
 			}
 			switch r {
 			case 1:
