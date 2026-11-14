@@ -6,8 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
-	"golang.org/x/term"
+	"github.com/zwz211123/gatehouse/internal/console"
 )
 
 type completion struct{ value, description string }
@@ -19,6 +20,12 @@ type connectChoice struct {
 
 // Account IDs take precedence over server names, including unavailable IDs.
 func (c *Core) connectChoices(l *Live, ref string) ([]connectChoice, error) {
+	return c.connectChoicesMatching(l, ref, false)
+}
+
+// Completion can also match name prefixes, using exactly the same account-ID
+// precedence, source authorization and enabled-target checks as connection.
+func (c *Core) connectChoicesMatching(l *Live, ref string, allowPrefix bool) ([]connectChoice, error) {
 	accounts, err := list[Account](c.Store, "account")
 	if err != nil {
 		return nil, err
@@ -37,7 +44,14 @@ func (c *Core) connectChoices(l *Live, ref string) ([]connectChoice, error) {
 			continue
 		}
 		_, asset, _, err := c.ownerAccount(l.User, a.ID)
-		if err == nil && (byID || asset.Name == ref) {
+		if err != nil {
+			continue
+		}
+		nameMatches := asset.Name == ref
+		if allowPrefix && terminalLabel(asset.Name) == asset.Name {
+			nameMatches = strings.HasPrefix(strings.ToLower(asset.Name), strings.ToLower(ref))
+		}
+		if byID || nameMatches {
 			choices = append(choices, connectChoice{a, asset})
 		}
 	}
@@ -100,31 +114,73 @@ func (c *Core) connectTarget(l *Live, w io.Writer, read func() (string, error), 
 
 // Match prefixes first, then fish-style ordered subsequences.
 func completionMatch(value, query string) bool {
-	query = strings.ToLower(query)
+	remaining := []rune(strings.ToLower(query))
 	for _, r := range strings.ToLower(value) {
-		if query != "" && r == []rune(query)[0] {
-			query = string([]rune(query)[1:])
+		if len(remaining) > 0 && r == remaining[0] {
+			remaining = remaining[1:]
 		}
 	}
-	return query == ""
+	return len(remaining) == 0
+}
+
+type completionSpan struct {
+	start, end int
+	query      string
+	words      []string
+}
+
+// The complete current argument is replaced, even when the cursor is inside
+// it. connect uses the same full-name-before-duration precedence as execution.
+func (c *Core) completionSpan(l *Live, line string, pos int) (completionSpan, bool) {
+	if pos < 0 || pos > len(line) || !utf8.ValidString(line) || !utf8.ValidString(line[:pos]) {
+		return completionSpan{}, false
+	}
+	start := strings.LastIndexAny(line[:pos], " \t") + 1
+	end := len(line)
+	if i := strings.IndexAny(line[pos:], " \t"); i >= 0 {
+		end = pos + i
+	}
+	words := strings.Fields(line[:start])
+	commandStart := len(line) - len(strings.TrimLeft(line, " \t"))
+	commandEnd := commandStart + len("connect")
+	if commandEnd < len(line) && line[commandStart:commandEnd] == "connect" && (line[commandEnd] == ' ' || line[commandEnd] == '\t') && pos > commandEnd {
+		start = commandEnd
+		for start < len(line) && (line[start] == ' ' || line[start] == '\t') {
+			start++
+		}
+		if pos < start {
+			return completionSpan{}, false
+		}
+		end = len(line)
+		args := line[start:end]
+		trimmedArgs := strings.TrimRight(args, " \t")
+		exact, _ := c.connectChoices(l, trimmedArgs)
+		if len(exact) == 0 {
+			if i := strings.LastIndexAny(trimmedArgs, " \t"); i >= 0 {
+				if _, err := strconv.Atoi(trimmedArgs[i+1:]); err == nil {
+					// A numeric last word may still belong to an incomplete
+					// name ("room 2" -> "room 20"), not a duration.
+					prefixes, _ := c.connectChoicesMatching(l, trimmedArgs, true)
+					if len(prefixes) == 0 {
+						end = start + len(strings.TrimRight(trimmedArgs[:i], " \t"))
+					}
+				}
+			}
+		}
+		if pos > end {
+			return completionSpan{}, false
+		}
+		words = []string{"connect"}
+	}
+	return completionSpan{start: start, end: end, query: line[start:pos], words: words}, true
 }
 
 func (c *Core) completions(l *Live, line string, pos int) []completion {
-	if pos < 0 || pos > len(line) {
+	span, ok := c.completionSpan(l, line, pos)
+	if !ok {
 		return nil
 	}
-	prefix := line[:pos]
-	start := strings.LastIndexAny(prefix, " \t") + 1
-	query := prefix[start:]
-	words := strings.Fields(prefix[:start])
-	if strings.HasPrefix(prefix, "connect ") || strings.HasPrefix(prefix, "connect\t") {
-		start = len("connect")
-		for start < len(prefix) && (prefix[start] == ' ' || prefix[start] == '\t') {
-			start++
-		}
-		query = prefix[start:]
-		words = []string{"connect"}
-	}
+	query, words := span.query, span.words
 	var choices []completion
 	if len(words) == 0 {
 		choices = []completion{{"list", "列出可用账号"}, {"search", "列出可用账号"}, {"info", "账号详情"}, {"connect", "连接目标账号"}, {"proxy", "临时账号管理"}, {"web", "Web 管理"}, {"whoami", "当前身份"}, {"clear", "清除终端输出"}, {"help", "帮助"}, {"exit", "退出"}}
@@ -159,12 +215,14 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 			}
 		}
 	}
-	// Completion values are redrawn verbatim by x/term, unlike menu labels.
+	// Completion values are redrawn verbatim by the line editor, unlike menu labels.
 	// Omit unsafe values instead of rewriting names and changing their meaning.
 	safeChoices := choices[:0]
+	seen := make(map[string]bool)
 	for _, x := range choices {
-		if terminalLabel(x.value) == x.value {
+		if terminalLabel(x.value) == x.value && !seen[x.value] {
 			safeChoices = append(safeChoices, x)
+			seen[x.value] = true
 		}
 	}
 	choices = safeChoices
@@ -180,52 +238,70 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 		}
 	}
 	for i := range out {
-		out[i].value = prefix[:start] + out[i].value + line[pos:]
+		out[i].value = line[:span.start] + out[i].value + line[span.end:]
 	}
 	return out
 }
 
-func (c *Core) setupCompletion(l *Live, terminal *term.Terminal) {
+func (c *Core) setupCompletion(l *Live, terminal *console.Terminal) {
 	var candidates []completion
-	last := ""
-	index := -1
+	original, last := "", ""
+	originalPos, lastPos, index, suffixLen, start := 0, 0, -1, 0, 0
+	reset := func() { candidates = nil; terminal.SetSuggestions(nil) }
 	terminal.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
-		if key != '\t' {
-			candidates = nil
-			last = ""
-			return "", 0, false
-		}
-		if line != last || candidates == nil {
+		active := len(candidates) > 0 && line == last && pos == lastPos
+		if active {
+			switch key {
+			case '\r', '\n':
+				reset()
+				return line, pos, true
+			case 7: // Ctrl-G cancels the preview and restores the original input.
+				reset()
+				return original, originalPos, true
+			case '\t', console.KeyDown, console.KeyRight:
+				index = (index + 1) % len(candidates)
+			case console.KeyBackTab, console.KeyUp, console.KeyLeft:
+				index = (index + len(candidates) - 1) % len(candidates)
+			default:
+				reset()
+				return "", 0, false
+			}
+		} else {
+			reset()
+			if key != '\t' {
+				return "", 0, false
+			}
+			span, ok := c.completionSpan(l, line, pos)
+			if !ok {
+				return line, pos, true
+			}
 			candidates = c.completions(l, line, pos)
-			index = -1
-		}
-		if len(candidates) == 0 {
-			return line, pos, true
-		}
-		index = (index + 1) % len(candidates)
-		if len(candidates) > 1 {
-			var menu strings.Builder
-			menu.WriteString("补全候选（Tab 循环选择）:\n")
-			// Keep large account lists to one small page around the selection.
-			pageStart := index / 8 * 8
-			pageEnd := pageStart + 8
-			if pageEnd > len(candidates) {
-				pageEnd = len(candidates)
+			if len(candidates) == 0 {
+				return line, pos, true
 			}
-			for i := pageStart; i < pageEnd; i++ {
-				x := candidates[i]
-				marker := "  "
-				if i == index {
-					marker = "\x1b[7m› "
-				}
-				fmt.Fprintf(&menu, "%s%s  — %s\x1b[0m\n", marker, terminalLabel(x.value), terminalLabel(x.description))
-			}
-			fmt.Fprintf(&menu, "候选 %d/%d\n", index+1, len(candidates))
-			// Terminal.Write redraws the prompt and preserves wrapped-line bookkeeping.
-			io.WriteString(terminal, menu.String())
+			original, originalPos = line, pos
+			start, suffixLen = span.start, len(line)-span.end
+			index = 0
 		}
 		last = candidates[index].value
-		return last, len(last), true
+		lastPos = len(last) - suffixLen
+		_, height := terminal.Size()
+		pageSize := min(8, max(1, height-2))
+		pageStart := index / pageSize * pageSize
+		pageEnd := min(pageStart+pageSize, len(candidates))
+		rows := make([]string, 0, pageEnd-pageStart+1)
+		for i := pageStart; i < pageEnd; i++ {
+			marker := "  "
+			if i == index {
+				marker = "› "
+			}
+			x := candidates[i]
+			label := x.value[start : len(x.value)-suffixLen]
+			rows = append(rows, marker+terminalLabel(label)+"  — "+terminalLabel(x.description))
+		}
+		rows = append(rows, fmt.Sprintf("%d/%d · Tab/方向键选择 · Enter 接受 · Ctrl-G 取消", index+1, len(candidates)))
+		terminal.SetSuggestions(rows)
+		return last, lastPos, true
 	}
 }
 

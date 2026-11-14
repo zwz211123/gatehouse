@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zwz211123/gatehouse/internal/console"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 )
 
 func TestTemporaryPasswordReviewAndDeletion(t *testing.T) {
@@ -123,7 +123,7 @@ func TestCompletionContextAndCycling(t *testing.T) {
 	if len(f.c.completions(f.l, "web confirm ", 12)) != 0 {
 		t.Fatal("completed confirmation digest")
 	}
-	terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+	terminal := console.NewTerminal(&bytes.Buffer{}, "ghb> ")
 	f.c.setupCompletion(f.l, terminal)
 	first, _, ok := terminal.AutoCompleteCallback("proxy ", 6, '\t')
 	if !ok {
@@ -135,6 +135,347 @@ func TestCompletionContextAndCycling(t *testing.T) {
 	}
 	if _, _, ok := terminal.AutoCompleteCallback("abc", 3, 'x'); ok {
 		t.Fatal("typing consumed")
+	}
+}
+
+type completionStream struct {
+	input  *strings.Reader
+	output bytes.Buffer
+}
+
+func (s *completionStream) Read(p []byte) (int, error)  { return s.input.Read(p) }
+func (s *completionStream) Write(p []byte) (int, error) { return s.output.Write(p) }
+
+func TestCompletionRealKeys(t *testing.T) {
+	f := setup(t)
+	for _, tc := range []struct{ name, keys, want string }{
+		{"down", "proxy \t\x1b[B\r\r", "proxy list"},
+		{"right", "proxy \t\x1b[C\r\r", "proxy list"},
+		{"up-wrap", "proxy \t\x1b[A\r\r", "proxy delete"},
+		{"left-wrap", "proxy \t\x1b[D\r\r", "proxy delete"},
+		{"backtab", "proxy \t\x1b[Z\r\r", "proxy delete"},
+		{"cycle", "proxy \t\t\t\x1b[A\r\r", "proxy list"},
+		{"cancel", "proxy \t\x07list\r", "proxy list"},
+		{"single-cancel", "proxy cr\t\x07eate\r", "proxy create"},
+		{"single-cycle", "proxy cr\t\x1b[D\x1b[Z\r\r", "proxy create"},
+		{"edit-after-selection", "proxy \t\x1b[B\r\x1b[D\x7fX\r", "proxy liXt"},
+		{"middle-of-token", "proxy create\x1b[D\x1b[D\x1b[D\t\r\r", "proxy create"},
+		{"cursor-before-suffix", "proxy cr suffix\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\tX\r", "proxy createX suffix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rw := &completionStream{input: strings.NewReader(tc.keys + "REMOTE")}
+			terminal := console.NewTerminal(rw, "ghb> ")
+			f.c.setupCompletion(f.l, terminal)
+			got, err := terminal.ReadLine()
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q %v; want %q", got, err, tc.want)
+			}
+			remaining, _ := io.ReadAll(rw.input)
+			if string(remaining) != "REMOTE" {
+				t.Fatalf("stole target input: %q", remaining)
+			}
+		})
+	}
+}
+
+func TestSingleCompletionRequiresAcceptance(t *testing.T) {
+	f := setup(t)
+	for _, input := range []string{"proxy cr", "clr", "connect ac"} {
+		rw := &completionStream{input: strings.NewReader(input + "\t\r")}
+		terminal := console.NewTerminal(rw, "ghb> ")
+		f.c.setupCompletion(f.l, terminal)
+		line, err := terminal.ReadLine()
+		if err != io.EOF {
+			t.Fatalf("first Enter submitted single candidate %q: %v", line, err)
+		}
+		if !strings.Contains(rw.output.String(), "1/1") {
+			t.Fatal("single preview lacks acceptance instructions")
+		}
+	}
+}
+
+func TestSingleDeleteCompletionOverSSH(t *testing.T) {
+	f := setup(t)
+	ticket, _ := f.ticket(t, Spec{Modes: []string{"shell"}})
+	if err := f.c.Revoke(f.l.User, ticket.ID, f.l.Source); err != nil {
+		t.Fatal(err)
+	}
+	client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err = session.RequestPty("xterm", 24, 80, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := session.StdinPipe()
+	out, _ := session.StdoutPipe()
+	if err = session.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- func() error {
+			until := func(want string) error {
+				var output strings.Builder
+				for !strings.HasSuffix(output.String(), want) {
+					var b [1]byte
+					n, err := out.Read(b[:])
+					if n > 0 {
+						output.WriteByte(b[0])
+					}
+					if err != nil {
+						return fmt.Errorf("waiting for %q: %w; output=%q", want, err, output.String())
+					}
+				}
+				return nil
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			prefix := "proxy delete " + ticket.ID[:len(ticket.ID)-2]
+			// First Enter must only accept. Clear the line and run whoami as
+			// a synchronization barrier, then inspect the credential record.
+			if _, err := io.WriteString(in, prefix+"\t\r\x15whoami\r"); err != nil {
+				return err
+			}
+			if err := until("用户ID: "); err != nil {
+				return err
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			var current Ticket
+			if err := f.c.Store.Get("ticket", ticket.ID, &current); err != nil {
+				return fmt.Errorf("first Enter deleted the credential: %w", err)
+			}
+			// With the second Enter, the same completed deletion must execute.
+			if _, err := io.WriteString(in, prefix+"\t\r\r"); err != nil {
+				return err
+			}
+			if err := until("已删除凭据记录，审计日志保留\r\n"); err != nil {
+				return err
+			}
+			if err := until("\x1b[5C"); err != nil {
+				return err
+			}
+			if err := f.c.Store.Get("ticket", ticket.ID, &current); err == nil {
+				return fmt.Errorf("second Enter did not delete the credential")
+			}
+			if _, err := io.WriteString(in, "exit\r"); err != nil {
+				return err
+			}
+			_, err := io.Copy(io.Discard, out)
+			return err
+		}()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("single-candidate deletion confirmation stalled")
+	}
+}
+
+func TestCompletionReplacementSpans(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	asset.Name = "中文 服务器"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		line string
+		pos  int
+		want string
+	}{
+		{"proxy create", len("proxy cr"), "proxy create"},
+		{"proxy cr suffix", len("proxy cr"), "proxy create suffix"},
+		{"connect 中文 服务xxx 3600", len("connect 中文 服"), "connect 中文 服务器 3600"},
+		{"connect 中文  3600 ", len("connect 中文"), "connect 中文 服务器  3600 "},
+		{"connect 中文 ", len("connect 中文 "), "connect 中文 服务器"},
+		{"  connect 中文", len("  connect 中文"), "  connect 中文 服务器"},
+	} {
+		xs := f.c.completions(f.l, tc.line, tc.pos)
+		if len(xs) != 1 || xs[0].value != tc.want {
+			t.Fatalf("%q @ %d: %v; want %q", tc.line, tc.pos, xs, tc.want)
+		}
+	}
+	// Complete in the middle of a Chinese argument with a duration to its
+	// right, then type at the returned cursor position (before that duration).
+	keys := "connect 中文 服务xxx 3600" + strings.Repeat("\x1b[D", len([]rune("务xxx 3600"))) + "\tX\r"
+	rw := &completionStream{input: strings.NewReader(keys)}
+	terminal := console.NewTerminal(rw, "ghb> ")
+	f.c.setupCompletion(f.l, terminal)
+	if got, err := terminal.ReadLine(); err != nil || got != "connect 中文 服务器X 3600" {
+		t.Fatalf("Chinese completion/cursor: %q %v", got, err)
+	}
+	for _, tc := range []struct {
+		line string
+		pos  int
+	}{
+		{"connect acct 3600", len("connect acct 36")},
+		{"中文", 1},
+		{"help", -1},
+		{"help", 5},
+	} {
+		if xs := f.c.completions(f.l, tc.line, tc.pos); len(xs) != 0 {
+			t.Fatalf("unexpected completions: %v", xs)
+		}
+	}
+	asset.Name = "room 2"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	xs := f.c.completions(f.l, "connect room 2", len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 2" {
+		t.Fatalf("numeric name suffix treated as duration: %v", xs)
+	}
+}
+
+func TestCompletionPartialNumericServerName(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, input, want string }{
+		{"room 20", "connect room 2", "connect room 20"},
+		{"Room 20", "connect room 2", "connect Room 20"},
+		{"中文机房 20", "connect 中文机房 2", "connect 中文机房 20"},
+	} {
+		asset.Name = tc.name
+		if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+			t.Fatal(err)
+		}
+		xs := f.c.completions(f.l, tc.input, len(tc.input))
+		if len(xs) != 1 || xs[0].value != tc.want {
+			t.Fatalf("%q: %v; want %q", tc.input, xs, tc.want)
+		}
+		rw := &completionStream{input: strings.NewReader(tc.input + "\t\r\r")}
+		terminal := console.NewTerminal(rw, "ghb> ")
+		f.c.setupCompletion(f.l, terminal)
+		got, err := terminal.ReadLine()
+		if err != nil || got != tc.want {
+			t.Fatalf("Tab: %q %v; want %q", got, err, tc.want)
+		}
+		account, duration, err := f.c.connectTarget(f.l, io.Discard, func() (string, error) { t.Fatal("single account prompted"); return "", io.EOF }, strings.TrimPrefix(got, "connect "))
+		if err != nil || account != "acct" || duration != 7200 {
+			t.Fatalf("completed numeric name parsed as duration: %q %d %v", account, duration, err)
+		}
+	}
+	asset.Name = "room 20"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	line := "connect room 2 3600"
+	xs := f.c.completions(f.l, line, len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 20 3600" {
+		t.Fatalf("lost explicit duration: %v", xs)
+	}
+	if xs = f.c.completions(f.l, line, len(line)); len(xs) != 0 {
+		t.Fatalf("completed duration as a target: %v", xs)
+	}
+}
+
+func TestNumericCompletionPrefixRespectsAvailabilityAndPermissions(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	asset.Name = "room"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	prefixAsset := asset
+	prefixAsset.ID, prefixAsset.Name = "prefix-asset", "room 20"
+	if err := f.c.Store.Put("asset", prefixAsset.ID, prefixAsset); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Store.Put("account", "prefix-account", Account{ID: "prefix-account", Asset: prefixAsset.ID, Name: "other", Credential: "cred", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	// A complete "room" target also exists; its optional duration must not
+	// prevent completing the authorized "room 20" prefix.
+	xs := f.c.completions(f.l, "connect room 2", len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 20" {
+		t.Fatalf("duration won over authorized name prefix: %v", xs)
+	}
+	if err := f.c.Store.Put("user", "reader", User{ID: "reader", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Store.Put("grant", "direct", Grant{ID: "direct", Subject: "reader", Issuer: f.l.User, Actions: []string{"shell.direct"}, Resources: []string{"acct"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"unauthorized", "source-denied", "disabled"} {
+		t.Run(scenario, func(t *testing.T) {
+			l := &Live{User: "reader", Source: f.l.Source}
+			if scenario == "source-denied" {
+				if err := f.c.Store.Put("grant", "prefix-direct", Grant{ID: "prefix-direct", Subject: "reader", Issuer: f.l.User, Actions: []string{"shell.direct"}, Resources: []string{"prefix-account"}, Enabled: true, CIDRs: []string{"192.0.2.0/24"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "disabled" {
+				l = f.l
+				prefixAsset.Enabled = false
+				if err := f.c.Store.Put("asset", prefixAsset.ID, prefixAsset); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// An unavailable prefix must not change where the authorized
+			// target ends, or completing "room" would silently remove " 2".
+			xs := f.c.completions(l, "connect room 2", len("connect room"))
+			if len(xs) != 1 || xs[0].value != "connect room 2" {
+				t.Fatalf("unavailable prefix changed duration parsing: %v", xs)
+			}
+		})
+	}
+}
+
+func TestMenuArrowCompletionOverSSH(t *testing.T) {
+	f := setup(t)
+	client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err = session.RequestPty("xterm", 6, 28, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := session.StdinPipe()
+	out, _ := session.StdoutPipe()
+	if err = session.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(out); done <- string(b) }()
+	fmt.Fprint(in, "proxy \t\x1b[B\r\rexit\r")
+	select {
+	case output := <-done:
+		if !strings.Contains(output, "暂无自己的临时凭据") {
+			t.Fatalf("down arrow did not select proxy list: %q", output)
+		}
+		if strings.Contains(output, "JSON 申请") || strings.Contains(output, "补全候选（") {
+			t.Fatalf("executed wrong command or used append-only pager: %q", output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("arrow completion stalled SSH menu")
 	}
 }
 
@@ -162,7 +503,7 @@ func TestMenuTabClearAndCredentialList(t *testing.T) {
 	done := make(chan string, 1)
 	go func() { b, _ := io.ReadAll(out); done <- string(b) }()
 	// clear via fuzzy completion; review the existing account, show exec only, return.
-	fmt.Fprint(in, "clr\t\rproxy list\r1\r2\r0\r0\rexit\r")
+	fmt.Fprint(in, "clr\t\r\rproxy list\r1\r2\r0\r0\rexit\r")
 	select {
 	case output := <-done:
 		for _, want := range []string{"\x1b[3J", ticket.Username, pw, "[exec]", "uname"} {
@@ -457,6 +798,114 @@ func TestMenuConnectByServerName(t *testing.T) {
 	}
 }
 
+func TestMenuConnectLineEndingHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial, afterReady, want string
+		multiple                        bool
+	}{
+		{"CRLF-queued", "connect acct\r\nhello", "", "hello", false},
+		{"CRLF-fragmented", "connect acct\r", "\nhello", "hello", false},
+		{"CR-only", "connect acct\r", "hello", "hello", false},
+		{"CR-preserve-later-LF", "connect acct\r", "h\nabc", "h\nabc", false},
+		{"LF-only", "connect acct\nhello", "", "hello", false},
+		{"preserve-next-LF", "connect acct\r\n\nabcd", "", "\nabcd", false},
+		{"numeric-prompt-CRLF", "connect target\r\n", "1\r\nhello", "hello", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			if tc.multiple {
+				if err := f.c.Store.Put("account", "acct2", Account{ID: "acct2", Asset: "asset", Name: "other", Credential: "cred", Enabled: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if err = session.RequestPty("xterm", 24, 80, nil); err != nil {
+				t.Fatal(err)
+			}
+			in, _ := session.StdinPipe()
+			out, _ := session.StdoutPipe()
+			if err = session.Shell(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- func() error {
+					until := func(want string) error {
+						var output strings.Builder
+						for !strings.HasSuffix(output.String(), want) {
+							var b [1]byte
+							n, err := out.Read(b[:])
+							if n > 0 {
+								output.WriteByte(b[0])
+							}
+							if err != nil {
+								return fmt.Errorf("waiting for %q: %w; output=%q", want, err, output.String())
+							}
+						}
+						return nil
+					}
+					// The renderer positions the cursor after drawing the prompt.
+					if err := until("\x1b[5C"); err != nil {
+						return err
+					}
+					if _, err := io.WriteString(in, tc.initial); err != nil {
+						return err
+					}
+					if tc.multiple {
+						if err := until("\x1b[5C"); err != nil {
+							return err
+						}
+						if _, err := io.WriteString(in, tc.afterReady); err != nil {
+							return err
+						}
+					}
+					if err := until("TARGET-SHELL\n"); err != nil {
+						return err
+					}
+					if !tc.multiple && tc.afterReady != "" {
+						if _, err := io.WriteString(in, tc.afterReady); err != nil {
+							return err
+						}
+					}
+					got := make([]byte, len(tc.want))
+					if _, err := io.ReadFull(out, got); err != nil {
+						return err
+					}
+					if string(got) != tc.want {
+						return fmt.Errorf("target received %q; want exactly %q", got, tc.want)
+					}
+					if err := until("\x1b[5C"); err != nil {
+						return err
+					}
+					_, err := io.WriteString(in, "exit\r\n")
+					if err != nil {
+						return err
+					}
+					_, err = io.Copy(io.Discard, out)
+					return err
+				}()
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("line-ending handoff stalled")
+			}
+		})
+	}
+}
+
 func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
 	f := setup(t)
 	var asset Asset
@@ -478,8 +927,8 @@ func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
 			if len(xs) != 1 || xs[0].value != "connect acct" {
 				t.Fatal("unsafe name offered or account ID lost", xs)
 			}
-			// Exercise the actual callback that hands the replacement to x/term.
-			terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+			// Exercise the actual callback that hands the replacement to x/console.
+			terminal := console.NewTerminal(&bytes.Buffer{}, "ghb> ")
 			f.c.setupCompletion(f.l, terminal)
 			line, _, ok := terminal.AutoCompleteCallback("connect tar", len("connect tar"), '\t')
 			if !ok || line != "connect tar" {

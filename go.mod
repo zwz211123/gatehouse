@@ -3,10 +3,11 @@ module github.com/zwz211123/gatehouse
 go 1.26.0
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0
+	github.com/mattn/go-runewidth v0.0.19
 	github.com/pkg/sftp v1.13.11
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.47.0
 	modernc.org/sqlite v1.61.0
 )
 
