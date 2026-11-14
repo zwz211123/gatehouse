@@ -3,6 +3,7 @@ module github.com/zwz211123/gatehouse
 go 1.26.0
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/pkg/sftp v1.13.11
 	golang.org/x/crypto v0.58.0
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect

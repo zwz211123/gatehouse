@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/clipperhouse/uax29/v2/graphemes"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -98,12 +99,36 @@ func clip(s string, cells int) string {
 func (t *Terminal) inputView() (string, int) {
 	budget := max(0, t.width-1)
 	prompt := clip(t.prompt, max(0, budget-1))
-	budget -= runewidth.StringWidth(prompt)
-	t.viewStart = min(t.viewStart, t.pos)
-	for t.viewStart < t.pos && runewidth.StringWidth(string(t.line[t.viewStart:t.pos])) >= budget {
-		t.viewStart++
+	promptWidth := runewidth.StringWidth(prompt)
+	budget -= promptWidth
+	if budget <= 0 {
+		t.viewStart = t.pos
+		return prompt, promptWidth
 	}
-	x := runewidth.StringWidth(prompt) + runewidth.StringWidth(string(t.line[t.viewStart:t.pos]))
+	t.viewStart = min(t.viewStart, t.pos)
+	// Measure each grapheme once. Repeatedly measuring decreasing suffixes
+	// makes Home/End on long lines quadratic, especially in narrow PTYs.
+	// Whole-cluster boundaries also avoid splitting combining marks or ZWJ
+	// emoji when scrolling the viewport.
+	type clusterWidth struct{ end, cells int }
+	clusters := make([]clusterWidth, 0, t.pos-t.viewStart)
+	iterator := graphemes.FromString(string(t.line[t.viewStart:t.pos]))
+	end, cells := t.viewStart, 0
+	for iterator.Next() {
+		cluster := iterator.Value()
+		width := runewidth.StringWidth(cluster)
+		end += utf8.RuneCountInString(cluster)
+		cells += width
+		clusters = append(clusters, clusterWidth{end, width})
+	}
+	for _, cluster := range clusters {
+		if cells < budget {
+			break
+		}
+		cells -= cluster.cells
+		t.viewStart = cluster.end
+	}
+	x := promptWidth + cells
 	return prompt + clip(string(t.line[t.viewStart:]), budget), min(x, max(0, t.width-1))
 }
 

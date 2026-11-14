@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -96,6 +97,67 @@ func TestViewportAndUnicodeCells(t *testing.T) {
 	_, x := terminal.inputView()
 	if x != 9 {
 		t.Fatalf("Chinese cursor = %d, want 9 cells", x)
+	}
+}
+
+func TestLongViewportDoesNotAllocateForEverySuffix(t *testing.T) {
+	terminal := NewTerminal(nil, "ghb> ")
+	terminal.line = []rune(strings.Repeat("x", 4096))
+	terminal.pos = len(terminal.line)
+	for _, width := range []int{1, 8, 80} {
+		terminal.width = width
+		allocations := testing.AllocsPerRun(1, func() {
+			terminal.viewStart = 0 // Home followed by End on a full input line.
+			text, x := terminal.inputView()
+			if runewidth.StringWidth(text) >= width || x >= width {
+				panic("viewport overflow")
+			}
+		})
+		// Allow ordinary renderer allocations, but not a new decreasing
+		// suffix for each of the 4,096 runes during one Home/End pair.
+		if allocations > 32 {
+			t.Fatalf("width %d: %.0f allocations per repaint; repeated suffix scans", width, allocations)
+		}
+	}
+}
+
+func BenchmarkViewportHomeEnd(b *testing.B) {
+	for _, width := range []int{1, 8, 80} {
+		for _, size := range []int{256, 1024, 4096} {
+			b.Run(fmt.Sprintf("width%d/runes%d", width, size), func(b *testing.B) {
+				terminal := NewTerminal(nil, "ghb> ")
+				terminal.width = width
+				terminal.line = []rune(strings.Repeat("x", size))
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					terminal.pos = 0
+					terminal.inputView()
+					terminal.pos = size
+					terminal.inputView()
+				}
+			})
+		}
+	}
+}
+
+func TestViewportKeepsGraphemeClusters(t *testing.T) {
+	for _, tc := range []struct {
+		line, want    string
+		width, cursor int
+	}{
+		{"中文服务器", "务器", 6, 4},
+		{"ae\u0301b", "e\u0301b", 4, 2},
+		{"a👨‍👩‍👧‍👦b", "👨‍👩‍👧‍👦b", 5, 3},
+	} {
+		terminal := NewTerminal(nil, "")
+		terminal.width = tc.width
+		terminal.line = []rune(tc.line)
+		terminal.pos = len(terminal.line)
+		got, cursor := terminal.inputView()
+		if got != tc.want || cursor != tc.cursor {
+			t.Fatalf("%q: got %q @ %d; want %q @ %d", tc.line, got, cursor, tc.want, tc.cursor)
+		}
 	}
 }
 
