@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zwz211123/gatehouse/internal/console"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 )
 
 func TestTemporaryPasswordReviewAndDeletion(t *testing.T) {
@@ -123,7 +123,7 @@ func TestCompletionContextAndCycling(t *testing.T) {
 	if len(f.c.completions(f.l, "web confirm ", 12)) != 0 {
 		t.Fatal("completed confirmation digest")
 	}
-	terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+	terminal := console.NewTerminal(&bytes.Buffer{}, "ghb> ")
 	f.c.setupCompletion(f.l, terminal)
 	first, _, ok := terminal.AutoCompleteCallback("proxy ", 6, '\t')
 	if !ok {
@@ -135,6 +135,139 @@ func TestCompletionContextAndCycling(t *testing.T) {
 	}
 	if _, _, ok := terminal.AutoCompleteCallback("abc", 3, 'x'); ok {
 		t.Fatal("typing consumed")
+	}
+}
+
+type completionStream struct {
+	input  *strings.Reader
+	output bytes.Buffer
+}
+
+func (s *completionStream) Read(p []byte) (int, error)  { return s.input.Read(p) }
+func (s *completionStream) Write(p []byte) (int, error) { return s.output.Write(p) }
+
+func TestCompletionRealKeys(t *testing.T) {
+	f := setup(t)
+	for _, tc := range []struct{ name, keys, want string }{
+		{"down", "proxy \t\x1b[B\r\r", "proxy list"},
+		{"right", "proxy \t\x1b[C\r\r", "proxy list"},
+		{"up-wrap", "proxy \t\x1b[A\r\r", "proxy delete"},
+		{"left-wrap", "proxy \t\x1b[D\r\r", "proxy delete"},
+		{"backtab", "proxy \t\x1b[Z\r\r", "proxy delete"},
+		{"cycle", "proxy \t\t\t\x1b[A\r\r", "proxy list"},
+		{"cancel", "proxy \t\x07list\r", "proxy list"},
+		{"edit-after-selection", "proxy \t\x1b[B\r\x1b[D\x7fX\r", "proxy liXt"},
+		{"middle-of-token", "proxy create\x1b[D\x1b[D\x1b[D\t\r", "proxy create"},
+		{"cursor-before-suffix", "proxy cr suffix\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\tX\r", "proxy createX suffix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rw := &completionStream{input: strings.NewReader(tc.keys + "REMOTE")}
+			terminal := console.NewTerminal(rw, "ghb> ")
+			f.c.setupCompletion(f.l, terminal)
+			got, err := terminal.ReadLine()
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q %v; want %q", got, err, tc.want)
+			}
+			remaining, _ := io.ReadAll(rw.input)
+			if string(remaining) != "REMOTE" {
+				t.Fatalf("stole target input: %q", remaining)
+			}
+		})
+	}
+}
+
+func TestCompletionReplacementSpans(t *testing.T) {
+	f := setup(t)
+	var asset Asset
+	if err := f.c.Store.Get("asset", "asset", &asset); err != nil {
+		t.Fatal(err)
+	}
+	asset.Name = "中文 服务器"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		line string
+		pos  int
+		want string
+	}{
+		{"proxy create", len("proxy cr"), "proxy create"},
+		{"proxy cr suffix", len("proxy cr"), "proxy create suffix"},
+		{"connect 中文 服务xxx 3600", len("connect 中文 服"), "connect 中文 服务器 3600"},
+		{"connect 中文  3600 ", len("connect 中文"), "connect 中文 服务器  3600 "},
+		{"connect 中文 ", len("connect 中文 "), "connect 中文 服务器"},
+		{"  connect 中文", len("  connect 中文"), "  connect 中文 服务器"},
+	} {
+		xs := f.c.completions(f.l, tc.line, tc.pos)
+		if len(xs) != 1 || xs[0].value != tc.want {
+			t.Fatalf("%q @ %d: %v; want %q", tc.line, tc.pos, xs, tc.want)
+		}
+	}
+	// Complete in the middle of a Chinese argument with a duration to its
+	// right, then type at the returned cursor position (before that duration).
+	keys := "connect 中文 服务xxx 3600" + strings.Repeat("\x1b[D", len([]rune("务xxx 3600"))) + "\tX\r"
+	rw := &completionStream{input: strings.NewReader(keys)}
+	terminal := console.NewTerminal(rw, "ghb> ")
+	f.c.setupCompletion(f.l, terminal)
+	if got, err := terminal.ReadLine(); err != nil || got != "connect 中文 服务器X 3600" {
+		t.Fatalf("Chinese completion/cursor: %q %v", got, err)
+	}
+	for _, tc := range []struct {
+		line string
+		pos  int
+	}{
+		{"connect acct 3600", len("connect acct 36")},
+		{"中文", 1},
+		{"help", -1},
+		{"help", 5},
+	} {
+		if xs := f.c.completions(f.l, tc.line, tc.pos); len(xs) != 0 {
+			t.Fatalf("unexpected completions: %v", xs)
+		}
+	}
+	asset.Name = "room 2"
+	if err := f.c.Store.Put("asset", asset.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+	xs := f.c.completions(f.l, "connect room 2", len("connect room 2"))
+	if len(xs) != 1 || xs[0].value != "connect room 2" {
+		t.Fatalf("numeric name suffix treated as duration: %v", xs)
+	}
+}
+
+func TestMenuArrowCompletionOverSSH(t *testing.T) {
+	f := setup(t)
+	client, err := ssh.Dial("tcp", f.address, &ssh.ClientConfig{User: "owner", Auth: []ssh.AuthMethod{ssh.PublicKeys(f.sign)}, HostKeyCallback: ssh.FixedHostKey(f.c.Signer.PublicKey()), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err = session.RequestPty("xterm", 6, 28, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := session.StdinPipe()
+	out, _ := session.StdoutPipe()
+	if err = session.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(out); done <- string(b) }()
+	fmt.Fprint(in, "proxy \t\x1b[B\r\rexit\r")
+	select {
+	case output := <-done:
+		if !strings.Contains(output, "暂无自己的临时凭据") {
+			t.Fatalf("down arrow did not select proxy list: %q", output)
+		}
+		if strings.Contains(output, "JSON 申请") || strings.Contains(output, "补全候选（") {
+			t.Fatalf("executed wrong command or used append-only pager: %q", output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("arrow completion stalled SSH menu")
 	}
 }
 
@@ -478,8 +611,8 @@ func TestCompletionOmitsTerminalControlCharacters(t *testing.T) {
 			if len(xs) != 1 || xs[0].value != "connect acct" {
 				t.Fatal("unsafe name offered or account ID lost", xs)
 			}
-			// Exercise the actual callback that hands the replacement to x/term.
-			terminal := term.NewTerminal(&bytes.Buffer{}, "ghb> ")
+			// Exercise the actual callback that hands the replacement to x/console.
+			terminal := console.NewTerminal(&bytes.Buffer{}, "ghb> ")
 			f.c.setupCompletion(f.l, terminal)
 			line, _, ok := terminal.AutoCompleteCallback("connect tar", len("connect tar"), '\t')
 			if !ok || line != "connect tar" {

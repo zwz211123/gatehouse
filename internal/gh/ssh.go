@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zwz211123/gatehouse/internal/console"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 )
 
 type addr string
@@ -283,7 +283,7 @@ func hostOnly(s string) string {
 func (c *Core) menuSession(l *Live, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	ch = &inputChannel{Channel: ch, hub: newInputHub(ch)}
 	defer ch.Close()
-	var terminal *term.Terminal
+	var terminal *console.Terminal
 	started := false
 	menuDone := make(chan struct{})
 	defer func() {
@@ -300,7 +300,7 @@ func (c *Core) menuSession(l *Live, ch ssh.Channel, reqs <-chan *ssh.Request) {
 				r.Reply(false, nil)
 				continue
 			}
-			terminal = term.NewTerminal(ch, "ghb> ")
+			terminal = console.NewTerminal(ch, "ghb> ")
 			l.TargetMu.Lock()
 			l.Term = p.Term
 			l.Columns = p.Columns
@@ -342,7 +342,7 @@ func (c *Core) menuSession(l *Live, ch ssh.Channel, reqs <-chan *ssh.Request) {
 		}
 	}
 }
-func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
+func (c *Core) menu(l *Live, ch ssh.Channel, terminal *console.Terminal) {
 	io.WriteString(ch, "\r\nGatehouse "+Version+" — 受控跳板终端\r\nlist | connect <账号ID或服务器名> [秒数] | proxy create | proxy list | proxy show <ID> | proxy revoke <ID> | proxy delete <ID> | web login | clear | help | exit\r\n")
 	read := func() (string, error) {
 		if terminal != nil {
@@ -398,7 +398,7 @@ func (c *Core) menu(l *Live, ch ssh.Channel, terminal *term.Terminal) {
 		case "clear":
 			io.WriteString(ch, "\x1b[H\x1b[2J\x1b[3J")
 		case "help":
-			io.WriteString(ch, "connect <账号ID或服务器名> [秒数]：单账号直接连接，多账号按序号选择，0 返回。Tab 显示带说明的模糊补全候选并循环选择。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
+			io.WriteString(ch, "connect <账号ID或服务器名> [秒数]：单账号直接连接，多账号按序号选择，0 返回。Tab 打开模糊补全，四个方向键/Tab 选择，Enter 接受后再按 Enter 执行，Ctrl-G 取消。clear 清屏。proxy list 用数字重看凭据、d序号删除无活动连接的失效凭据，d all 批量清理；proxy show/delete <ID> 可直接操作。proxy create 后按提示粘贴 JSON 申请；字段说明见安装手册。web confirm <操作摘要> 为 Web 敏感操作签发确认码。\r\n")
 		case "whoami":
 			io.WriteString(ch, "用户ID: "+l.User+" 来源: "+l.Source+"\r\n")
 		case "list", "search":
