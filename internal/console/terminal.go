@@ -166,11 +166,26 @@ func safeText(s string) string {
 }
 
 func (t *Terminal) ReadLine() (string, error) {
+	return t.readLine(nil)
+}
+
+// ReadLineWithPrompt uses a field label for this read only. The label participates
+// in editing and resize redraws, instead of being erased by the first paint.
+func (t *Terminal) ReadLineWithPrompt(prompt string) (string, error) {
+	return t.readLine(&prompt)
+}
+
+func (t *Terminal) readLine(prompt *string) (string, error) {
 	t.mu.Lock()
+	previousPrompt := t.prompt
+	if prompt != nil {
+		t.prompt = *prompt
+	}
 	// Every return holds mu: make the state transition and unlock atomic
 	// to SetSize, including after the submitted newline has been written.
 	defer func() {
 		t.reading = false
+		t.prompt = previousPrompt
 		t.mu.Unlock()
 	}()
 	t.reading = true

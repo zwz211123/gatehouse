@@ -186,6 +186,8 @@ func (c *Core) completions(l *Live, line string, pos int) []completion {
 		choices = []completion{{"list", "列出可用账号"}, {"search", "列出可用账号"}, {"info", "账号详情"}, {"connect", "连接目标账号"}, {"proxy", "临时账号管理"}, {"web", "Web 管理"}, {"whoami", "当前身份"}, {"clear", "清除终端输出"}, {"help", "帮助"}, {"exit", "退出"}}
 	} else if len(words) == 1 && words[0] == "proxy" {
 		choices = []completion{{"create", "申请临时账号"}, {"list", "查看凭据和快捷命令、清理已失效凭据"}, {"show", "重看凭据和快捷命令"}, {"revoke", "撤销凭据"}, {"delete", "删除无活动连接的失效凭据"}}
+	} else if len(words) == 2 && words[0] == "proxy" && words[1] == "create" {
+		choices = []completion{{"--json", "粘贴 JSON 申请"}}
 	} else if len(words) == 1 && words[0] == "web" {
 		choices = []completion{{"login", "获取登录 token"}, {"revoke", "撤销 Web 会话"}, {"confirm", "确认敏感操作"}}
 	} else if len(words) == 1 && contains([]string{"connect", "info"}, words[0]) {
